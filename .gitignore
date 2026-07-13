@@ -1,0 +1,10 @@
+AWS.md
+
+# Build outputs and dependencies
+app/backend/target/
+app/frontend/node_modules/
+app/frontend/dist/
+
+# Local environment files
+.env
+*.local

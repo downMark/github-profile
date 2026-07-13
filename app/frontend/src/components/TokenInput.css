@@ -1,0 +1,78 @@
+.token-input {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 560px;
+  width: 100%;
+  text-align: left;
+}
+
+.token-input-label {
+  font-weight: 500;
+  color: var(--text-h);
+}
+
+.token-input-row {
+  display: flex;
+  gap: 8px;
+}
+
+.token-input-field {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  font: inherit;
+  color: var(--text-h);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  outline: none;
+}
+
+.token-input-field::placeholder {
+  color: var(--text);
+  opacity: 0.6;
+}
+
+.token-input-field:focus-visible {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+.token-input-field:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.token-input-submit {
+  padding: 10px 20px;
+  font: inherit;
+  font-weight: 500;
+  color: var(--accent);
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.token-input-submit:hover:not(:disabled) {
+  filter: brightness(0.95);
+}
+
+.token-input-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.token-input-error {
+  margin: 0;
+  font-size: 14px;
+  color: #dc2626;
+}
+
+@media (prefers-color-scheme: dark) {
+  .token-input-error {
+    color: #f87171;
+  }
+}

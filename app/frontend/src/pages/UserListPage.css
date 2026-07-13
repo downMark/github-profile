@@ -1,0 +1,78 @@
+.user-list-page {
+  width: 100%;
+  padding: 32px 24px 48px;
+  box-sizing: border-box;
+  text-align: left;
+}
+
+.user-list-page__header {
+  margin-bottom: 24px;
+}
+
+.user-list-page__header h1 {
+  margin: 0 0 8px;
+  font-size: 32px;
+  letter-spacing: -0.5px;
+}
+
+.user-list-page__header p {
+  margin: 0;
+  color: var(--text);
+}
+
+.user-list-page__grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.user-list-page__grid > li {
+  display: flex;
+}
+
+.user-list-page__grid .user-card {
+  flex: 1;
+}
+
+.user-list-page__status {
+  padding: 48px 0;
+  text-align: center;
+  color: var(--text);
+}
+
+.user-list-page__status--error p {
+  margin: 0 0 12px;
+  color: #d33;
+}
+
+.user-list-page__status button,
+.user-list-page__pagination button {
+  padding: 8px 16px;
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.user-list-page__status button:hover:not(:disabled),
+.user-list-page__pagination button:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+
+.user-list-page__pagination button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.user-list-page__pagination {
+  margin-top: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}

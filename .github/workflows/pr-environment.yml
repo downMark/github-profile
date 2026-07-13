@@ -1,0 +1,81 @@
+name: PR Environment
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  AWS_REGION: ap-northeast-1
+  AWS_ROLE_ARN: arn:aws:iam::688674375825:role/github-profile-github-actions-oidc-role
+  CODEBUILD_PROJECT: github-profile-dev-pr-builder
+
+jobs:
+  codebuild:
+    name: Start CodeBuild
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Start PR environment build
+        id: start
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event.action }}" == "closed" ]]; then
+            DEPLOY_MODE="cleanup"
+          else
+            DEPLOY_MODE="deploy"
+          fi
+
+          SHORT_SHA="${GITHUB_SHA::12}"
+          IMAGE_TAG="pr-${{ github.event.pull_request.number }}-${SHORT_SHA}"
+
+          BUILD_ID="$(aws codebuild start-build \
+            --project-name "${CODEBUILD_PROJECT}" \
+            --source-version "${GITHUB_SHA}" \
+            --environment-variables-override \
+              name=PR_NUMBER,value=${{ github.event.pull_request.number }},type=PLAINTEXT \
+              name=GIT_SHA,value=${GITHUB_SHA},type=PLAINTEXT \
+              name=DEPLOY_MODE,value=${DEPLOY_MODE},type=PLAINTEXT \
+              name=IMAGE_TAG,value=${IMAGE_TAG},type=PLAINTEXT \
+            --query 'build.id' \
+            --output text)"
+
+          echo "build_id=${BUILD_ID}" >> "${GITHUB_OUTPUT}"
+          echo "Started CodeBuild ${BUILD_ID}"
+
+      - name: Wait for CodeBuild
+        run: |
+          set -euo pipefail
+
+          BUILD_ID="${{ steps.start.outputs.build_id }}"
+          while true; do
+            STATUS="$(aws codebuild batch-get-builds \
+              --ids "${BUILD_ID}" \
+              --query 'builds[0].buildStatus' \
+              --output text)"
+
+            echo "CodeBuild status: ${STATUS}"
+
+            case "${STATUS}" in
+              SUCCEEDED)
+                exit 0
+                ;;
+              FAILED|FAULT|STOPPED|TIMED_OUT)
+                exit 1
+                ;;
+              *)
+                sleep 15
+                ;;
+            esac
+          done

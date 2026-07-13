@@ -1,0 +1,2 @@
+# SPA fallback: 所有路由交给 index.html，由前端路由处理
+/*    /index.html    200
