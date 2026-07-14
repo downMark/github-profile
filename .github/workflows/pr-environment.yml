@@ -7,75 +7,90 @@ on:
 permissions:
   id-token: write
   contents: read
-  pull-requests: write
+
+concurrency:
+  group: pr-environment-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 env:
   AWS_REGION: ap-northeast-1
   AWS_ROLE_ARN: arn:aws:iam::688674375825:role/github-profile-github-actions-oidc-role
-  CODEBUILD_PROJECT: github-profile-dev-pr-builder
+  ECR_REPOSITORY: github-profile-dev-backend
 
 jobs:
-  codebuild:
-    name: Start CodeBuild
-    if: github.event.pull_request.head.repo.full_name == github.repository
+  guard:
+    name: Check PR guard
+    uses: ./.github/workflows/pr-guard.yml
+    with:
+      head-ref: ${{ github.event.pull_request.head.ref }}
+      head-repository: ${{ github.event.pull_request.head.repo.full_name }}
+      repository: ${{ github.repository }}
+
+  build-and-push:
+    name: Build and push backend image
+    needs: guard
+    if: needs.guard.outputs.allowed == 'true' && github.event.action != 'closed'
     runs-on: ubuntu-latest
     steps:
+      - name: Check out PR commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Start PR environment build
-        id: start
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Prepare image metadata
+        id: image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
 
-          if [[ "${{ github.event.action }}" == "closed" ]]; then
-            DEPLOY_MODE="cleanup"
-          else
-            DEPLOY_MODE="deploy"
-          fi
+          SHORT_SHA="${HEAD_SHA:0:12}"
+          IMAGE_TAG="pr-${PR_NUMBER}-${SHORT_SHA}"
+          IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 
-          SHORT_SHA="${GITHUB_SHA::12}"
-          IMAGE_TAG="pr-${{ github.event.pull_request.number }}-${SHORT_SHA}"
+          echo "tag=${IMAGE_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "uri=${IMAGE_URI}" >> "${GITHUB_OUTPUT}"
 
-          BUILD_ID="$(aws codebuild start-build \
-            --project-name "${CODEBUILD_PROJECT}" \
-            --source-version "${GITHUB_SHA}" \
-            --environment-variables-override \
-              name=PR_NUMBER,value=${{ github.event.pull_request.number }},type=PLAINTEXT \
-              name=GIT_SHA,value=${GITHUB_SHA},type=PLAINTEXT \
-              name=DEPLOY_MODE,value=${DEPLOY_MODE},type=PLAINTEXT \
-              name=IMAGE_TAG,value=${IMAGE_TAG},type=PLAINTEXT \
-            --query 'build.id' \
-            --output text)"
+      - name: Build backend image
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
+        run: docker build --pull --tag "${IMAGE_URI}" app/backend
 
-          echo "build_id=${BUILD_ID}" >> "${GITHUB_OUTPUT}"
-          echo "Started CodeBuild ${BUILD_ID}"
+      - name: Push backend image
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
+        run: docker push "${IMAGE_URI}"
 
-      - name: Wait for CodeBuild
+      - name: Publish build summary
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
         run: |
-          set -euo pipefail
+          {
+            echo "### Backend image published"
+            echo
+            echo "\`${IMAGE_URI}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
-          BUILD_ID="${{ steps.start.outputs.build_id }}"
-          while true; do
-            STATUS="$(aws codebuild batch-get-builds \
-              --ids "${BUILD_ID}" \
-              --query 'builds[0].buildStatus' \
-              --output text)"
-
-            echo "CodeBuild status: ${STATUS}"
-
-            case "${STATUS}" in
-              SUCCEEDED)
-                exit 0
-                ;;
-              FAILED|FAULT|STOPPED|TIMED_OUT)
-                exit 1
-                ;;
-              *)
-                sleep 15
-                ;;
-            esac
-          done
+  cleanup:
+    name: Record PR environment cleanup
+    needs: guard
+    if: needs.guard.outputs.allowed == 'true' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record pending cleanup
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          echo "PR ${PR_NUMBER} closed. ECS, ALB, Cloud Map, database schema, and Pages cleanup will be added in the deployment phase."

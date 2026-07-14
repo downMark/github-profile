@@ -1,0 +1,60 @@
+name: PR Guard
+
+on:
+  workflow_call:
+    inputs:
+      head-ref:
+        description: Pull request source branch name
+        required: true
+        type: string
+      head-repository:
+        description: Pull request source repository
+        required: true
+        type: string
+      repository:
+        description: Repository running the workflow
+        required: true
+        type: string
+    outputs:
+      allowed:
+        description: Whether this pull request may use the PR environment workflow
+        value: ${{ jobs.validate.outputs.allowed }}
+
+jobs:
+  validate:
+    name: Validate PR environment eligibility
+    runs-on: ubuntu-latest
+    outputs:
+      allowed: ${{ steps.guard.outputs.allowed }}
+    steps:
+      - name: Check repository and branch name
+        id: guard
+        env:
+          HEAD_REF: ${{ inputs.head-ref }}
+          HEAD_REPOSITORY: ${{ inputs.head-repository }}
+          REPOSITORY: ${{ inputs.repository }}
+        run: |
+          set -euo pipefail
+
+          ALLOWED=false
+          REASON=""
+
+          if [[ "${HEAD_REPOSITORY}" != "${REPOSITORY}" ]]; then
+            REASON="PRs from forks cannot create AWS resources."
+          elif [[ ! "${HEAD_REF}" =~ ^jira-[[:alnum:]] ]]; then
+            REASON="The source branch must start with jira- followed by a letter or number."
+          else
+            ALLOWED=true
+            REASON="PR environment operations are allowed."
+          fi
+
+          echo "allowed=${ALLOWED}" >> "${GITHUB_OUTPUT}"
+          echo "${REASON}"
+
+          {
+            echo "### PR guard"
+            echo
+            echo "- Source branch: \`${HEAD_REF}\`"
+            echo "- Allowed: \`${ALLOWED}\`"
+            echo "- Reason: ${REASON}"
+          } >> "${GITHUB_STEP_SUMMARY}"
