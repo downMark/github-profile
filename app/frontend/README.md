@@ -16,7 +16,7 @@ npm run preview    # 预览构建产物
 
 | 变量                | 说明                                      |
 | ------------------- | ----------------------------------------- |
-| `VITE_API_BASE_URL` | 后端 API 地址（API Gateway），默认 `/api` |
+| `VITE_API_BASE_URL` | 后端 API 基础地址，默认 `/api` |
 
 本地可创建 `.env.local` 覆盖（参考 `.env.example`）。
 
@@ -28,10 +28,8 @@ npm run preview    # 预览构建产物
 
 ```bash
 npm run build
-npx wrangler pages deploy
+npx wrangler pages deploy dist --project-name <PROJECT_NAME>
 ```
 
-- Git 集成部署时，Pages 项目设置：
-  - Build command: `npm run build`
-  - Build output directory: `dist`
-  - Root directory: `app/frontend`
+- PR 环境由 GitHub Actions 使用 `--branch=pr-<PR_NUMBER>` 发布 Direct Upload Preview。
+- Cloudflare API Token 保存在 AWS Secrets Manager，Actions 运行时读取，不提交到仓库。

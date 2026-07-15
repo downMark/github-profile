@@ -1,0 +1,245 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Per-pull-request ECS Fargate environment for github-profile.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: github-profile
+    AllowedPattern: '[a-z0-9-]+'
+  EnvironmentName:
+    Type: String
+    Default: dev
+    AllowedPattern: '[a-z0-9-]+'
+  PrNumber:
+    Type: Number
+    MinValue: 1
+  RulePriority:
+    Type: Number
+    MinValue: 1
+    MaxValue: 50000
+  ImageUri:
+    Type: String
+  EcsCluster:
+    Type: String
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+  EcsSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+  AlbListenerArn:
+    Type: String
+  ApiOrigin:
+    Type: String
+    AllowedPattern: 'https?://[^/]+'
+  FrontendOrigin:
+    Type: String
+    AllowedPattern: 'https?://[^/]+'
+  CloudMapNamespaceId:
+    Type: String
+  EcsTaskExecutionRoleArn:
+    Type: String
+  EcsTaskRoleArn:
+    Type: String
+  RdsSecretArn:
+    Type: String
+  TokenEncryptionSecretArn:
+    Type: String
+  DatabaseHost:
+    Type: String
+  DatabaseName:
+    Type: String
+    Default: postgres
+
+Resources:
+  BackendLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${ProjectName}/pr-${PrNumber}'
+      RetentionInDays: 14
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: PullRequest
+          Value: !Ref PrNumber
+
+  DiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: !Sub 'pr-${PrNumber}'
+      NamespaceId: !Ref CloudMapNamespaceId
+      Description: !Sub 'Cloud Map service for ${ProjectName} PR ${PrNumber}'
+      DnsConfig:
+        RoutingPolicy: MULTIVALUE
+        DnsRecords:
+          - Type: A
+            TTL: 60
+      HealthCheckCustomConfig:
+        FailureThreshold: 1
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: PullRequest
+          Value: !Ref PrNumber
+
+  BackendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub 'ghprof-pr-${PrNumber}-tg'
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 3000
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: !Sub '/pr-${PrNumber}/health'
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      Matcher:
+        HttpCode: '200'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: PullRequest
+          Value: !Ref PrNumber
+
+  BackendListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref AlbListenerArn
+      Priority: !Ref RulePriority
+      Conditions:
+        - Field: path-pattern
+          PathPatternConfig:
+            Values:
+              - !Sub '/pr-${PrNumber}'
+              - !Sub '/pr-${PrNumber}/*'
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref BackendTargetGroup
+
+  BackendTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${ProjectName}-pr-${PrNumber}'
+      Cpu: '256'
+      Memory: '512'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !Ref EcsTaskExecutionRoleArn
+      TaskRoleArn: !Ref EcsTaskRoleArn
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ContainerDefinitions:
+        - Name: backend
+          Image: !Ref ImageUri
+          Essential: true
+          PortMappings:
+            - Name: http
+              ContainerPort: 3000
+              HostPort: 3000
+              Protocol: tcp
+          Environment:
+            - Name: PORT
+              Value: '3000'
+            - Name: DATABASE_MAX_CONNECTIONS
+              Value: '5'
+            - Name: DB_HOST
+              Value: !Ref DatabaseHost
+            - Name: DB_PORT
+              Value: '5432'
+            - Name: DB_NAME
+              Value: !Ref DatabaseName
+            - Name: DB_SCHEMA
+              Value: !Sub 'pr_${PrNumber}'
+            - Name: DB_SSL_MODE
+              Value: require
+            - Name: API_BASE_PATH
+              Value: !Sub '/pr-${PrNumber}'
+            - Name: ALLOWED_ORIGIN
+              Value: !Ref FrontendOrigin
+            - Name: RUST_LOG
+              Value: info
+          Secrets:
+            - Name: DB_USERNAME
+              ValueFrom: !Sub '${RdsSecretArn}:username::'
+            - Name: DB_PASSWORD
+              ValueFrom: !Sub '${RdsSecretArn}:password::'
+            - Name: TOKEN_ENCRYPTION_KEY
+              ValueFrom: !Ref TokenEncryptionSecretArn
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref BackendLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: backend
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: PullRequest
+          Value: !Ref PrNumber
+
+  BackendService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - BackendListenerRule
+    Properties:
+      ServiceName: !Sub '${ProjectName}-pr-${PrNumber}'
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref BackendTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      HealthCheckGracePeriodSeconds: 90
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 0
+        MaximumPercent: 200
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups:
+            - !Ref EcsSecurityGroupId
+      LoadBalancers:
+        - TargetGroupArn: !Ref BackendTargetGroup
+          ContainerName: backend
+          ContainerPort: 3000
+      ServiceRegistries:
+        - RegistryArn: !GetAtt DiscoveryService.Arn
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: PullRequest
+          Value: !Ref PrNumber
+
+Outputs:
+  ApiBaseUrl:
+    Description: API base URL used by the frontend build.
+    Value: !Sub '${ApiOrigin}/pr-${PrNumber}/api'
+  HealthUrl:
+    Description: Backend health check URL.
+    Value: !Sub '${ApiOrigin}/pr-${PrNumber}/health'
+  EcsServiceName:
+    Value: !GetAtt BackendService.Name
+  TaskDefinitionArn:
+    Value: !Ref BackendTaskDefinition
+  CloudMapServiceArn:
+    Value: !GetAtt DiscoveryService.Arn
+  DatabaseSchema:
+    Value: !Sub 'pr_${PrNumber}'

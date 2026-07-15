@@ -7,15 +7,11 @@ on:
 permissions:
   id-token: write
   contents: read
+  pull-requests: write
 
 concurrency:
   group: pr-environment-${{ github.event.pull_request.number }}
   cancel-in-progress: true
-
-env:
-  AWS_REGION: ap-northeast-1
-  AWS_ROLE_ARN: arn:aws:iam::688674375825:role/github-profile-github-actions-oidc-role
-  ECR_REPOSITORY: github-profile-dev-backend
 
 jobs:
   guard:
@@ -26,22 +22,71 @@ jobs:
       head-repository: ${{ github.event.pull_request.head.repo.full_name }}
       repository: ${{ github.repository }}
 
-  build-and-push:
-    name: Build and push backend image
+  deploy-backend:
+    name: Build and deploy backend
     needs: guard
     if: needs.guard.outputs.allowed == 'true' && github.event.action != 'closed'
     runs-on: ubuntu-latest
+    environment: dev
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      SHARED_CONFIG_PARAMETER: ${{ vars.SHARED_CONFIG_PARAMETER }}
+    outputs:
+      api-base-url: ${{ steps.stack.outputs.api-base-url }}
+      health-url: ${{ steps.stack.outputs.health-url }}
+      image-uri: ${{ steps.image.outputs.uri }}
     steps:
       - name: Check out PR commit
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
+      - name: Validate bootstrap configuration
+        run: |
+          set -euo pipefail
+          required=(AWS_REGION AWS_ROLE_ARN SHARED_CONFIG_PARAMETER)
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing GitHub repository variable: ${name}" >&2
+              exit 1
+            fi
+          done
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Load shared deployment configuration
+        uses: ./.github/actions/load-deployment-config
+        with:
+          parameter-name: ${{ env.SHARED_CONFIG_PARAMETER }}
+
+      - name: Validate deployment configuration
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          required=(
+            CLOUDFORMATION_ROLE_ARN ECR_REPOSITORY
+            ECS_CLUSTER VPC_ID PRIVATE_SUBNETS ECS_SECURITY_GROUP
+            ALB_LISTENER_ARN API_ORIGIN CLOUD_MAP_NAMESPACE_ID
+            ECS_TASK_EXECUTION_ROLE_ARN ECS_TASK_ROLE_ARN RDS_SECRET_ARN
+            TOKEN_ENCRYPTION_SECRET_ARN DB_HOST RESOURCE_PREFIX
+            DEPLOY_ENVIRONMENT CLOUDFLARE_PROJECT_NAME
+          )
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing shared deployment configuration value: ${name}" >&2
+              exit 1
+            fi
+          done
+          if (( PR_NUMBER + 1000 > 50000 )); then
+            echo "PR number cannot be mapped to a valid ALB listener rule priority" >&2
+            exit 1
+          fi
 
       - name: Log in to Amazon ECR
         id: login-ecr
@@ -55,11 +100,9 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-
           SHORT_SHA="${HEAD_SHA:0:12}"
           IMAGE_TAG="pr-${PR_NUMBER}-${SHORT_SHA}"
           IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
-
           echo "tag=${IMAGE_TAG}" >> "${GITHUB_OUTPUT}"
           echo "uri=${IMAGE_URI}" >> "${GITHUB_OUTPUT}"
 
@@ -73,24 +116,242 @@ jobs:
           IMAGE_URI: ${{ steps.image.outputs.uri }}
         run: docker push "${IMAGE_URI}"
 
-      - name: Publish build summary
+      - name: Deploy PR CloudFormation stack
         env:
           IMAGE_URI: ${{ steps.image.outputs.uri }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          {
-            echo "### Backend image published"
-            echo
-            echo "\`${IMAGE_URI}\`"
-          } >> "${GITHUB_STEP_SUMMARY}"
+          set -euo pipefail
+          STACK_NAME="${RESOURCE_PREFIX}-pr-${PR_NUMBER}"
+          RULE_PRIORITY="$((1000 + PR_NUMBER))"
+          FRONTEND_ORIGIN="https://pr-${PR_NUMBER}.${CLOUDFLARE_PROJECT_NAME}.pages.dev"
+          DATABASE_NAME="${DB_NAME:-postgres}"
 
-  cleanup:
-    name: Record PR environment cleanup
-    needs: guard
-    if: needs.guard.outputs.allowed == 'true' && github.event.action == 'closed'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Record pending cleanup
+          aws cloudformation deploy \
+            --stack-name "${STACK_NAME}" \
+            --template-file infra/pr-environment.yaml \
+            --role-arn "${CLOUDFORMATION_ROLE_ARN}" \
+            --no-fail-on-empty-changeset \
+            --tags \
+              Project="${RESOURCE_PREFIX}" \
+              Environment="${DEPLOY_ENVIRONMENT}" \
+              PullRequest="${PR_NUMBER}" \
+            --parameter-overrides \
+              ProjectName="${RESOURCE_PREFIX}" \
+              EnvironmentName="${DEPLOY_ENVIRONMENT}" \
+              PrNumber="${PR_NUMBER}" \
+              RulePriority="${RULE_PRIORITY}" \
+              ImageUri="${IMAGE_URI}" \
+              EcsCluster="${ECS_CLUSTER}" \
+              VpcId="${VPC_ID}" \
+              PrivateSubnetIds="${PRIVATE_SUBNETS}" \
+              EcsSecurityGroupId="${ECS_SECURITY_GROUP}" \
+              AlbListenerArn="${ALB_LISTENER_ARN}" \
+              ApiOrigin="${API_ORIGIN}" \
+              FrontendOrigin="${FRONTEND_ORIGIN}" \
+              CloudMapNamespaceId="${CLOUD_MAP_NAMESPACE_ID}" \
+              EcsTaskExecutionRoleArn="${ECS_TASK_EXECUTION_ROLE_ARN}" \
+              EcsTaskRoleArn="${ECS_TASK_ROLE_ARN}" \
+              RdsSecretArn="${RDS_SECRET_ARN}" \
+              TokenEncryptionSecretArn="${TOKEN_ENCRYPTION_SECRET_ARN}" \
+              DatabaseHost="${DB_HOST}" \
+              DatabaseName="${DATABASE_NAME}"
+
+      - name: Read stack outputs
+        id: stack
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          echo "PR ${PR_NUMBER} closed. ECS, ALB, Cloud Map, database schema, and Pages cleanup will be added in the deployment phase."
+          set -euo pipefail
+          STACK_NAME="${RESOURCE_PREFIX}-pr-${PR_NUMBER}"
+          API_BASE_URL="$(aws cloudformation describe-stacks \
+            --stack-name "${STACK_NAME}" \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiBaseUrl'].OutputValue" \
+            --output text)"
+          HEALTH_URL="$(aws cloudformation describe-stacks \
+            --stack-name "${STACK_NAME}" \
+            --query "Stacks[0].Outputs[?OutputKey=='HealthUrl'].OutputValue" \
+            --output text)"
+          echo "api-base-url=${API_BASE_URL}" >> "${GITHUB_OUTPUT}"
+          echo "health-url=${HEALTH_URL}" >> "${GITHUB_OUTPUT}"
+          curl --fail --silent --show-error --retry 5 --retry-delay 5 "${HEALTH_URL}"
+
+      - name: Publish backend summary
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
+          API_BASE_URL: ${{ steps.stack.outputs.api-base-url }}
+          HEALTH_URL: ${{ steps.stack.outputs.health-url }}
+        run: |
+          {
+            echo "### PR backend environment"
+            echo
+            echo "- Image: \`${IMAGE_URI}\`"
+            echo "- API base URL: ${API_BASE_URL}"
+            echo "- Health URL: ${HEALTH_URL}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  deploy-frontend:
+    name: Deploy Cloudflare Pages preview
+    needs: [guard, deploy-backend]
+    if: needs.guard.outputs.allowed == 'true' && github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      SHARED_CONFIG_PARAMETER: ${{ vars.SHARED_CONFIG_PARAMETER }}
+    steps:
+      - name: Check out PR commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Load shared deployment configuration
+        uses: ./.github/actions/load-deployment-config
+        with:
+          parameter-name: ${{ env.SHARED_CONFIG_PARAMETER }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: app/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: app/frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: app/frontend
+        env:
+          VITE_API_BASE_URL: ${{ needs.deploy-backend.outputs.api-base-url }}
+        run: npm run build
+
+      - name: Validate Cloudflare configuration
+        run: |
+          set -euo pipefail
+          required=(CLOUDFLARE_PROJECT_NAME CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN_SECRET_ARN)
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing shared deployment configuration value: ${name}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Read Cloudflare API token
+        id: cloudflare-token
+        run: |
+          set -euo pipefail
+          TOKEN="$(aws secretsmanager get-secret-value \
+            --secret-id "${CLOUDFLARE_API_TOKEN_SECRET_ARN}" \
+            --query SecretString \
+            --output text)"
+          if [[ -z "${TOKEN}" || "${TOKEN}" == "None" ]]; then
+            echo "Cloudflare API token secret is empty" >&2
+            exit 1
+          fi
+          echo "::add-mask::${TOKEN}"
+          echo "token=${TOKEN}" >> "${GITHUB_OUTPUT}"
+
+      - name: Deploy Pages preview
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ steps.cloudflare-token.outputs.token }}
+          accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: app/frontend
+          command: pages deploy dist --project-name=${{ env.CLOUDFLARE_PROJECT_NAME }} --branch=pr-${{ github.event.pull_request.number }}
+
+      - name: Publish frontend summary
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo "### Cloudflare Pages preview"
+            echo
+            echo "- URL: https://pr-${PR_NUMBER}.${CLOUDFLARE_PROJECT_NAME}.pages.dev"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Comment PR environment URLs
+        uses: actions/github-script@v7
+        env:
+          API_BASE_URL: ${{ needs.deploy-backend.outputs.api-base-url }}
+          HEALTH_URL: ${{ needs.deploy-backend.outputs.health-url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        with:
+          script: |
+            const marker = '<!-- github-profile-pr-environment -->';
+            const previewUrl = `https://pr-${process.env.PR_NUMBER}.${process.env.CLOUDFLARE_PROJECT_NAME}.pages.dev`;
+            const body = [
+              marker,
+              '### PR environment',
+              '',
+              `- Frontend: ${previewUrl}`,
+              `- API: ${process.env.API_BASE_URL}`,
+              `- Health: ${process.env.HEALTH_URL}`,
+            ].join('\n');
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+            const existing = comments.find(comment =>
+              comment.user?.type === 'Bot' && comment.body?.includes(marker)
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+  cleanup:
+    name: Clean up PR environment
+    needs: guard
+    if: needs.guard.outputs.allowed == 'true' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      SHARED_CONFIG_PARAMETER: ${{ vars.SHARED_CONFIG_PARAMETER }}
+    steps:
+      - name: Check out cleanup script
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Load shared deployment configuration
+        uses: ./.github/actions/load-deployment-config
+        with:
+          parameter-name: ${{ env.SHARED_CONFIG_PARAMETER }}
+
+      - name: Drop schema and delete PR stack
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: .github/scripts/cleanup-pr-environment.sh
+
+      - name: Record Pages cleanup limitation
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo "### Cloudflare Pages cleanup"
+            echo
+            echo "The latest deployment for branch \`pr-${PR_NUMBER}\` cannot be deleted by Pages."
+            echo "Older deployments can be removed by the configured retention process."
+          } >> "${GITHUB_STEP_SUMMARY}"

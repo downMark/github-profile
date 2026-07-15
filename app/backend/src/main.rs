@@ -24,13 +24,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let config = Config::from_env();
 
+    if config.database_schema_action.as_deref() == Some("drop") {
+        infrastructure::db::drop_schema(&config).await?;
+        return Ok(());
+    }
+
     let pool = infrastructure::db::create_pool(&config).await?;
     infrastructure::db::run_migrations(&pool).await?;
     tracing::info!("database connected, migrations up to date");
 
     let cipher = TokenCipher::from_hex_key(&config.token_encryption_key)?;
     let state = AppState::new(pool, cipher, GithubClient::new());
-    let app = api::router::build(state, &config.allowed_origin)?;
+    let app = api::router::build(state, &config.allowed_origin, &config.api_base_path)?;
 
     // 在 Lambda 运行时中由 API Gateway 事件驱动；本地开发直接起 HTTP 服务
     if std::env::var("AWS_LAMBDA_RUNTIME_API").is_ok() {

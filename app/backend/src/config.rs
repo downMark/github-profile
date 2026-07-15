@@ -1,17 +1,38 @@
+/// 数据库连接配置。
+#[derive(Debug, Clone)]
+pub enum DatabaseConnection {
+    /// 本地开发等场景继续支持完整连接串。
+    Url(String),
+    /// ECS 从 RDS 托管 Secret 分别注入用户名和密码，避免凭证经过 CI。
+    Components {
+        host: String,
+        port: u16,
+        database: String,
+        username: String,
+        password: String,
+        ssl_mode: String,
+    },
+}
+
 /// 应用配置，全部来自环境变量。
-///
 #[derive(Debug, Clone)]
 pub struct Config {
     /// 本地开发 HTTP 端口（Lambda 模式下不使用）
     pub port: u16,
-    /// PostgreSQL 连接串（如 postgres://user:pass@host:5432/db）
-    pub database_url: String,
+    /// PostgreSQL 连接信息。
+    pub database: DatabaseConnection,
+    /// PR 环境使用的独立 schema；本地未设置时使用数据库默认 search_path。
+    pub database_schema: Option<String>,
+    /// 一次性清理任务使用 `drop`；常规 API 任务不设置。
+    pub database_schema_action: Option<String>,
     /// 连接池最大连接数（Lambda 单实例并发为 1，保持小值避免打满 RDS）
     pub database_max_connections: u32,
     /// Token AES-256-GCM 加密密钥（32 字节 hex，共 64 个 hex 字符）。
     pub token_encryption_key: String,
     /// 允许访问 API 的前端 Origin。默认仅用于本地开发。
     pub allowed_origin: String,
+    /// ALB 为每个 PR 分配的路径前缀，如 `/pr-123`。
+    pub api_base_path: String,
 }
 
 impl Config {
@@ -21,8 +42,25 @@ impl Config {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(3000);
-        let database_url =
-            std::env::var("DATABASE_URL").expect("environment variable DATABASE_URL must be set");
+        let database = match std::env::var("DATABASE_URL") {
+            Ok(url) => DatabaseConnection::Url(url),
+            Err(_) => DatabaseConnection::Components {
+                host: required_env("DB_HOST"),
+                port: std::env::var("DB_PORT")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(5432),
+                database: std::env::var("DB_NAME").unwrap_or_else(|_| "postgres".into()),
+                username: required_env("DB_USERNAME"),
+                password: required_env("DB_PASSWORD"),
+                ssl_mode: std::env::var("DB_SSL_MODE").unwrap_or_else(|_| "require".into()),
+            },
+        };
+        let database_schema = std::env::var("DB_SCHEMA").ok();
+        if let Some(schema) = &database_schema {
+            assert!(valid_pr_schema(schema), "DB_SCHEMA must match pr_<number>");
+        }
+        let database_schema_action = std::env::var("DB_SCHEMA_ACTION").ok();
         let database_max_connections = std::env::var("DATABASE_MAX_CONNECTIONS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -31,12 +69,44 @@ impl Config {
             .expect("environment variable TOKEN_ENCRYPTION_KEY must be set (32-byte hex)");
         let allowed_origin =
             std::env::var("ALLOWED_ORIGIN").unwrap_or_else(|_| "http://localhost:5173".into());
+        let api_base_path = std::env::var("API_BASE_PATH").unwrap_or_default();
+        assert!(
+            api_base_path.is_empty()
+                || (api_base_path.starts_with('/') && !api_base_path.ends_with('/')),
+            "API_BASE_PATH must be empty or start with / and must not end with /"
+        );
         Self {
             port,
-            database_url,
+            database,
+            database_schema,
+            database_schema_action,
             database_max_connections,
             token_encryption_key,
             allowed_origin,
+            api_base_path,
         }
+    }
+}
+
+fn required_env(name: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| panic!("environment variable {name} must be set"))
+}
+
+fn valid_pr_schema(schema: &str) -> bool {
+    schema
+        .strip_prefix("pr_")
+        .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_pr_schema;
+
+    #[test]
+    fn validates_pr_schema_names() {
+        assert!(valid_pr_schema("pr_123"));
+        assert!(!valid_pr_schema("pr_"));
+        assert!(!valid_pr_schema("public"));
+        assert!(!valid_pr_schema("pr_1;drop schema public"));
     }
 }
