@@ -11,3 +11,4 @@ app/frontend/dist/
 # Local environment files
 .env
 *.local
+.claude/

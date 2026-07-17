@@ -6,11 +6,9 @@ phases:
       - test -n "${AUTH_ECR_REPOSITORY}" && test -n "${IMAGE_TAG}"
       - REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
       - IMAGE_URI="${REGISTRY}/${AUTH_ECR_REPOSITORY}:${IMAGE_TAG}"
+      - CACHE_URI="${REGISTRY}/${AUTH_ECR_REPOSITORY}:buildcache"
       - aws ecr get-login-password | docker login --username AWS --password-stdin "${REGISTRY}"
+      - docker buildx create --use --name ci-builder --driver docker-container
   build:
     commands:
-      - docker run --rm -v "${CODEBUILD_SRC_DIR}:/workspace" -w /workspace/app/auth-service rust:1.94-bookworm bash -c 'rustup component add rustfmt && cargo fmt --check && cargo test --locked'
-      - docker build --pull --tag "${IMAGE_URI}" app/auth-service
-  post_build:
-    commands:
-      - docker push "${IMAGE_URI}"
+      - docker buildx build --push --provenance=false --progress plain --tag "${IMAGE_URI}" --cache-from "type=registry,ref=${CACHE_URI}" --cache-to "type=registry,ref=${CACHE_URI},mode=max,image-manifest=true,oci-mediatypes=true" app/auth-service

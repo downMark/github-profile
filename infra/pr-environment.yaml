@@ -138,12 +138,15 @@ Resources:
       HealthCheckEnabled: true
       HealthCheckProtocol: HTTP
       HealthCheckPath: !Sub '${ApiBasePath}/health'
-      HealthCheckIntervalSeconds: 30
+      HealthCheckIntervalSeconds: 10
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 2
       UnhealthyThresholdCount: 2
       Matcher:
         HttpCode: '200'
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '5'
       Tags:
         - Key: Project
           Value: !Ref ProjectName
@@ -163,12 +166,15 @@ Resources:
       HealthCheckEnabled: true
       HealthCheckProtocol: HTTP
       HealthCheckPath: !Sub '${ApiBasePath}/health/todo'
-      HealthCheckIntervalSeconds: 30
+      HealthCheckIntervalSeconds: 10
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 2
       UnhealthyThresholdCount: 2
       Matcher:
         HttpCode: '200'
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '5'
       Tags:
         - Key: Project
           Value: !Ref ProjectName
@@ -188,12 +194,15 @@ Resources:
       HealthCheckEnabled: true
       HealthCheckProtocol: HTTP
       HealthCheckPath: !Sub '${ApiBasePath}/health/auth'
-      HealthCheckIntervalSeconds: 30
+      HealthCheckIntervalSeconds: 10
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 2
       UnhealthyThresholdCount: 2
       Matcher:
         HttpCode: '200'
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '5'
       Tags:
         - Key: Project
           Value: !Ref ProjectName
@@ -486,7 +495,7 @@ Resources:
       DesiredCount: 1
       LaunchType: FARGATE
       PlatformVersion: 1.4.0
-      HealthCheckGracePeriodSeconds: 90
+      HealthCheckGracePeriodSeconds: 30
       DeploymentConfiguration:
         MinimumHealthyPercent: 0
         MaximumPercent: 200
@@ -526,7 +535,6 @@ Resources:
     Type: AWS::ECS::Service
     DependsOn:
       - ProfileListenerRule
-      - AuthService
     Properties:
       ServiceName: !Sub '${ProjectName}-profile-${EnvironmentId}'
       Cluster: !Ref EcsCluster
@@ -534,7 +542,7 @@ Resources:
       DesiredCount: 1
       LaunchType: FARGATE
       PlatformVersion: 1.4.0
-      HealthCheckGracePeriodSeconds: 90
+      HealthCheckGracePeriodSeconds: 30
       DeploymentConfiguration:
         MinimumHealthyPercent: 0
         MaximumPercent: 200
@@ -574,8 +582,6 @@ Resources:
     Type: AWS::ECS::Service
     DependsOn:
       - TodoListenerRule
-      - ProfileService
-      - AuthService
     Properties:
       ServiceName: !Sub '${ProjectName}-todo-${EnvironmentId}'
       Cluster: !Ref EcsCluster
@@ -583,7 +589,7 @@ Resources:
       DesiredCount: 1
       LaunchType: FARGATE
       PlatformVersion: 1.4.0
-      HealthCheckGracePeriodSeconds: 90
+      HealthCheckGracePeriodSeconds: 30
       DeploymentConfiguration:
         MinimumHealthyPercent: 0
         MaximumPercent: 200

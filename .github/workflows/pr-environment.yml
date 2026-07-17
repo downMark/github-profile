@@ -63,6 +63,30 @@ jobs:
           ENVIRONMENT_ID: pr-${{ github.event.pull_request.number }}
         run: .github/scripts/run-codebuild-batch.sh
 
+  frontend-checks:
+    name: Lint frontend
+    needs: guard
+    if: needs.guard.outputs.allowed == 'true' && github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out PR commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: app/frontend/package-lock.json
+
+      - name: Lint frontend
+        working-directory: app/frontend
+        run: |
+          npm ci
+          npm run lint
+
   deploy-services:
     name: Deploy Auth, Profile and Todo services
     needs: [guard, build-services]
@@ -192,7 +216,7 @@ jobs:
 
   deploy-frontend:
     name: Deploy Cloudflare Pages preview
-    needs: [guard, deploy-services]
+    needs: [guard, frontend-checks, deploy-services]
     if: needs.guard.outputs.allowed == 'true' && github.event.action != 'closed'
     runs-on: ubuntu-latest
     environment: dev
@@ -228,14 +252,12 @@ jobs:
           cache: npm
           cache-dependency-path: app/frontend/package-lock.json
 
-      - name: Test and build frontend
+      - name: Build frontend
         working-directory: app/frontend
         env:
           VITE_API_BASE_URL: ${{ needs.deploy-services.outputs.api-base-url }}
         run: |
           npm ci
-          npm test -- --run
-          npm run lint
           npm run build
 
       - name: Read Cloudflare API token

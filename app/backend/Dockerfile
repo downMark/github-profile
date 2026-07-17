@@ -1,13 +1,25 @@
 FROM rust:1.94-bookworm AS builder
 
 WORKDIR /workspace/backend
+RUN rustup component add rustfmt
 
+# 依赖预编译层：Cargo.lock/contracts 不变即可命中缓存，避免每次全量重编译
+COPY contracts /workspace/contracts
 COPY backend/Cargo.toml backend/Cargo.lock backend/build.rs ./
+RUN mkdir src \
+    && echo 'fn main() {}' > src/main.rs \
+    && cargo build --release --locked \
+    && cargo test --release --locked --no-run \
+    && rm -rf src \
+        target/release/github-profile-api* \
+        target/release/deps/github_profile_api-* \
+        target/release/.fingerprint/github-profile-api-*
+
 COPY backend/migrations ./migrations
 COPY backend/src ./src
-COPY contracts /workspace/contracts
-
-RUN cargo build --release --locked
+RUN cargo fmt --check \
+    && cargo test --release --locked \
+    && cargo build --release --locked
 
 FROM debian:bookworm-slim AS runtime
 
