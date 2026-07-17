@@ -250,51 +250,10 @@ jobs:
           npm run lint
           npm run build
 
-      - name: Read Cloudflare API token
-        id: cloudflare-token
-        run: |
-          set -euo pipefail
-          SECRET_VALUE="$(aws secretsmanager get-secret-value --secret-id "${CLOUDFLARE_API_TOKEN_SECRET_ARN}" --query SecretString --output text)"
-          TOKEN="${SECRET_VALUE}"
-
-          if jq -e 'type == "object"' <<< "${SECRET_VALUE}" > /dev/null 2>&1; then
-            TOKEN="$(jq -r '.CLOUDFLARE_API_TOKEN // .api_token // .token // empty' <<< "${SECRET_VALUE}")"
-            if [[ -z "${TOKEN}" ]]; then
-              echo "Cloudflare secret is JSON but has no CLOUDFLARE_API_TOKEN, api_token, or token field" >&2
-              exit 1
-            fi
-          elif jq -e 'type == "string"' <<< "${SECRET_VALUE}" > /dev/null 2>&1; then
-            TOKEN="$(jq -r '.' <<< "${SECRET_VALUE}")"
-          fi
-
-          TOKEN="${TOKEN//$'\r'/}"
-          TOKEN="${TOKEN//$'\n'/}"
-          if [[ -z "${TOKEN}" || "${TOKEN}" == "None" ]]; then
-            echo "Cloudflare API token secret is empty" >&2
-            exit 1
-          fi
-
-          echo "::add-mask::${TOKEN}"
-
-          VERIFY_RESPONSE="${RUNNER_TEMP}/cloudflare-token-verify.json"
-          HTTP_STATUS="$(curl --silent --show-error \
-            --output "${VERIFY_RESPONSE}" \
-            --write-out '%{http_code}' \
-            'https://api.cloudflare.com/client/v4/user/tokens/verify' \
-            --header "Authorization: Bearer ${TOKEN}" || true)"
-          if [[ "${HTTP_STATUS}" != "200" ]] || ! jq -e '.success == true and .result.status == "active"' "${VERIFY_RESPONSE}" > /dev/null 2>&1; then
-            ERROR_MESSAGE="$(jq -r '.errors[0].message // ("token status: " + (.result.status // "unknown"))' "${VERIFY_RESPONSE}" 2>/dev/null || echo 'unparseable response')"
-            echo "Cloudflare API token verification failed (HTTP ${HTTP_STATUS}): ${ERROR_MESSAGE}" >&2
-            exit 1
-          fi
-
-          echo "Cloudflare API token is valid and active"
-          echo "token=${TOKEN}" >> "${GITHUB_OUTPUT}"
-
       - name: Deploy Pages preview
         uses: cloudflare/wrangler-action@v3
         with:
-          apiToken: ${{ steps.cloudflare-token.outputs.token }}
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: app/frontend
           command: pages deploy dist --project-name=${{ env.CLOUDFLARE_PROJECT_NAME }} --branch=pr-${{ github.event.pull_request.number }}
