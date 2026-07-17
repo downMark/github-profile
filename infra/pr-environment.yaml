@@ -314,7 +314,7 @@ Resources:
             - Name: DB_PASSWORD
               ValueFrom: !Sub '${RdsSecretArn}:password::'
             - Name: TOKEN_ENCRYPTION_KEY
-              ValueFrom: !Ref TokenEncryptionSecretArn
+              ValueFrom: !Sub '${TokenEncryptionSecretArn}:TOKEN_ENCRYPTION_KEY::'
           LogConfiguration:
             LogDriver: awslogs
             Options:
