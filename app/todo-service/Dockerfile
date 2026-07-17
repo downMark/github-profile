@@ -1,4 +1,5 @@
-FROM golang:1.24-bookworm AS builder
+# 基础镜像走 ECR Public 官方镜像源，规避 Docker Hub 匿名限流（429）
+FROM public.ecr.aws/docker/library/golang:1.24-bookworm AS builder
 
 WORKDIR /workspace/todo-service
 

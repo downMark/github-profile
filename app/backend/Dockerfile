@@ -1,4 +1,5 @@
-FROM rust:1.94-bookworm AS builder
+# 基础镜像走 ECR Public 官方镜像源，规避 Docker Hub 匿名限流（429）
+FROM public.ecr.aws/docker/library/rust:1.94-bookworm AS builder
 
 WORKDIR /workspace/backend
 RUN rustup component add rustfmt
@@ -21,7 +22,7 @@ RUN cargo fmt --check \
     && cargo test --release --locked \
     && cargo build --release --locked
 
-FROM debian:bookworm-slim AS runtime
+FROM public.ecr.aws/docker/library/debian:bookworm-slim AS runtime
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
