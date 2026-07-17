@@ -9,7 +9,7 @@ phases:
       - aws ecr get-login-password | docker login --username AWS --password-stdin "${REGISTRY}"
   build:
     commands:
-      - docker run --rm -v "${CODEBUILD_SRC_DIR}:/workspace" -w /workspace/app/auth-service rust:1.94-bookworm bash -lc 'rustup component add rustfmt && cargo fmt --check && cargo test --locked'
+      - docker run --rm -v "${CODEBUILD_SRC_DIR}:/workspace" -w /workspace/app/auth-service rust:1.94-bookworm bash -c 'rustup component add rustfmt && cargo fmt --check && cargo test --locked'
       - docker build --pull --tag "${IMAGE_URI}" app/auth-service
   post_build:
     commands:

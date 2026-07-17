@@ -9,7 +9,7 @@ phases:
       - aws ecr get-login-password | docker login --username AWS --password-stdin "${REGISTRY}"
   build:
     commands:
-      - docker run --rm -v "${CODEBUILD_SRC_DIR}:/workspace" -w /workspace golang:1.24-bookworm bash -lc 'apt-get update >/dev/null && apt-get install -y git protobuf-compiler >/dev/null && app/todo-service/scripts/generate-proto.sh && git diff --exit-code -- app/todo-service/internal/gen && cd app/todo-service && go test ./... && go vet ./...'
+      - docker run --rm -v "${CODEBUILD_SRC_DIR}:/workspace" -w /workspace golang:1.24-bookworm bash -c 'apt-get update >/dev/null && apt-get install -y git protobuf-compiler >/dev/null && app/todo-service/scripts/generate-proto.sh && git diff --exit-code -- app/todo-service/internal/gen && cd app/todo-service && go test ./... && go vet ./...'
       - docker build --pull --file app/todo-service/Dockerfile --tag "${IMAGE_URI}" app
   post_build:
     commands:
