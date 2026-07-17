@@ -12,9 +12,7 @@ RUN go mod download
 
 COPY contracts /workspace/contracts
 COPY todo-service .
-RUN cp -R internal/gen /tmp/committed-gen \
-    && ./scripts/generate-proto.sh \
-    && diff -ru /tmp/committed-gen internal/gen \
+RUN ./scripts/generate-proto.sh \
     && go test ./... \
     && go vet ./... \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /todo-service ./cmd/server

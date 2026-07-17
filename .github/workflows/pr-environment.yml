@@ -63,30 +63,6 @@ jobs:
           ENVIRONMENT_ID: pr-${{ github.event.pull_request.number }}
         run: .github/scripts/run-codebuild-batch.sh
 
-  frontend-checks:
-    name: Lint frontend
-    needs: guard
-    if: needs.guard.outputs.allowed == 'true' && github.event.action != 'closed'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out PR commit
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: npm
-          cache-dependency-path: app/frontend/package-lock.json
-
-      - name: Lint frontend
-        working-directory: app/frontend
-        run: |
-          npm ci
-          npm run lint
-
   deploy-services:
     name: Deploy Auth, Profile and Todo services
     needs: [guard, build-services]
@@ -216,18 +192,20 @@ jobs:
 
   deploy-frontend:
     name: Deploy Cloudflare Pages preview
-    needs: [guard, frontend-checks, deploy-services]
+    needs: guard
     if: needs.guard.outputs.allowed == 'true' && github.event.action != 'closed'
     runs-on: ubuntu-latest
     environment: dev
     permissions:
       id-token: write
       contents: read
-      pull-requests: write
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
       SHARED_CONFIG_PARAMETER: ${{ vars.SHARED_CONFIG_PARAMETER }}
+    outputs:
+      api-base-url: ${{ steps.urls.outputs.api-base-url }}
+      preview-url: ${{ steps.urls.outputs.preview-url }}
     steps:
       - name: Check out PR commit
         uses: actions/checkout@v4
@@ -252,12 +230,24 @@ jobs:
           cache: npm
           cache-dependency-path: app/frontend/package-lock.json
 
-      - name: Build frontend
+      - name: Prepare preview URLs
+        id: urls
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          API_BASE_URL="${API_ORIGIN%/}/pr-${PR_NUMBER}/api"
+          PREVIEW_URL="https://pr-${PR_NUMBER}.${CLOUDFLARE_PROJECT_NAME}.pages.dev"
+          echo "api-base-url=${API_BASE_URL}" >> "${GITHUB_OUTPUT}"
+          echo "preview-url=${PREVIEW_URL}" >> "${GITHUB_OUTPUT}"
+
+      - name: Lint and build frontend
         working-directory: app/frontend
         env:
-          VITE_API_BASE_URL: ${{ needs.deploy-services.outputs.api-base-url }}
+          VITE_API_BASE_URL: ${{ steps.urls.outputs.api-base-url }}
         run: |
           npm ci
+          npm run lint
           npm run build
 
       - name: Read Cloudflare API token
@@ -280,6 +270,29 @@ jobs:
           workingDirectory: app/frontend
           command: pages deploy dist --project-name=${{ env.CLOUDFLARE_PROJECT_NAME }} --branch=pr-${{ github.event.pull_request.number }}
 
+      - name: Publish frontend summary
+        run: |
+          {
+            echo "### PR frontend"
+            echo
+            echo "- Frontend: ${{ steps.urls.outputs.preview-url }}"
+            echo "- API configured at build time: ${{ steps.urls.outputs.api-base-url }}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  publish-environment:
+    name: Publish PR environment URLs
+    needs: [guard, deploy-services, deploy-frontend]
+    if: >-
+      always() &&
+      needs.guard.outputs.allowed == 'true' &&
+      github.event.action != 'closed' &&
+      needs.deploy-services.result == 'success' &&
+      needs.deploy-frontend.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
       - name: Comment PR environment URLs
         uses: actions/github-script@v7
         env:
@@ -287,16 +300,15 @@ jobs:
           PROFILE_HEALTH_URL: ${{ needs.deploy-services.outputs.profile-health-url }}
           TODO_HEALTH_URL: ${{ needs.deploy-services.outputs.todo-health-url }}
           AUTH_HEALTH_URL: ${{ needs.deploy-services.outputs.auth-health-url }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PREVIEW_URL: ${{ needs.deploy-frontend.outputs.preview-url }}
         with:
           script: |
             const marker = '<!-- github-profile-pr-environment -->';
-            const previewUrl = `https://pr-${process.env.PR_NUMBER}.${process.env.CLOUDFLARE_PROJECT_NAME}.pages.dev`;
             const body = [
               marker,
               '### PR environment',
               '',
-              `- Frontend: ${previewUrl}`,
+              `- Frontend: ${process.env.PREVIEW_URL}`,
               `- API: ${process.env.API_BASE_URL}`,
               `- Auth health: ${process.env.AUTH_HEALTH_URL}`,
               `- Profile health: ${process.env.PROFILE_HEALTH_URL}`,
