@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Per-pull-request ECS Fargate environment for github-profile.
+Description: Auth, Profile and Todo ECS Fargate environment for github-profile.
 
 Parameters:
   ProjectName:
@@ -10,14 +10,32 @@ Parameters:
     Type: String
     Default: dev
     AllowedPattern: '[a-z0-9-]+'
-  PrNumber:
+  EnvironmentId:
+    Type: String
+    AllowedPattern: '(prod|staging|pr-[0-9]+)'
+  DatabaseSchema:
+    Type: String
+    AllowedPattern: '(prod|staging|pr_[0-9]+)'
+  ApiBasePath:
+    Type: String
+    AllowedPattern: '(/(prod|staging|pr-[0-9]+))?'
+  AuthRulePriority:
     Type: Number
     MinValue: 1
-  RulePriority:
+    MaxValue: 49998
+  TodoRulePriority:
     Type: Number
     MinValue: 1
+    MaxValue: 49999
+  ProfileRulePriority:
+    Type: Number
+    MinValue: 2
     MaxValue: 50000
-  ImageUri:
+  ProfileImageUri:
+    Type: String
+  AuthImageUri:
+    Type: String
+  TodoImageUri:
     Type: String
   EcsCluster:
     Type: String
@@ -35,9 +53,12 @@ Parameters:
   FrontendOrigin:
     Type: String
     AllowedPattern: 'https?://[^/]+'
-  CloudMapNamespaceId:
+  CloudMapNamespaceArn:
     Type: String
+    AllowedPattern: 'arn:aws:servicediscovery:[^:]+:[0-9]{12}:namespace/ns-[a-z0-9]+'
   EcsTaskExecutionRoleArn:
+    Type: String
+  AuthTaskRoleArn:
     Type: String
   EcsTaskRoleArn:
     Type: String
@@ -52,51 +73,71 @@ Parameters:
     Default: postgres
 
 Resources:
-  BackendLogGroup:
+  JwtSigningKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub 'JWT signing key for ${ProjectName} ${EnvironmentId}'
+      KeySpec: RSA_2048
+      KeyUsage: SIGN_VERIFY
+      PendingWindowInDays: 7
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: EnvironmentInstance
+          Value: !Ref EnvironmentId
+
+  AuthLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/ecs/${ProjectName}/pr-${PrNumber}'
+      LogGroupName: !Sub '/ecs/${ProjectName}/auth/${EnvironmentId}'
       RetentionInDays: 14
       Tags:
         - Key: Project
           Value: !Ref ProjectName
         - Key: Environment
           Value: !Ref EnvironmentName
-        - Key: PullRequest
-          Value: !Ref PrNumber
+        - Key: EnvironmentInstance
+          Value: !Ref EnvironmentId
 
-  DiscoveryService:
-    Type: AWS::ServiceDiscovery::Service
+  ProfileLogGroup:
+    Type: AWS::Logs::LogGroup
     Properties:
-      Name: !Sub 'pr-${PrNumber}'
-      NamespaceId: !Ref CloudMapNamespaceId
-      Description: !Sub 'Cloud Map service for ${ProjectName} PR ${PrNumber}'
-      DnsConfig:
-        RoutingPolicy: MULTIVALUE
-        DnsRecords:
-          - Type: A
-            TTL: 60
-      HealthCheckCustomConfig:
-        FailureThreshold: 1
+      LogGroupName: !Sub '/ecs/${ProjectName}/profile/${EnvironmentId}'
+      RetentionInDays: 14
       Tags:
         - Key: Project
           Value: !Ref ProjectName
         - Key: Environment
           Value: !Ref EnvironmentName
-        - Key: PullRequest
-          Value: !Ref PrNumber
+        - Key: EnvironmentInstance
+          Value: !Ref EnvironmentId
 
-  BackendTargetGroup:
+  TodoLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${ProjectName}/todo/${EnvironmentId}'
+      RetentionInDays: 14
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: EnvironmentInstance
+          Value: !Ref EnvironmentId
+
+  ProfileTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      Name: !Sub 'ghprof-pr-${PrNumber}-tg'
+      Name: !Sub 'ghprof-p-${EnvironmentId}-tg'
       VpcId: !Ref VpcId
       Protocol: HTTP
       Port: 3000
       TargetType: ip
       HealthCheckEnabled: true
       HealthCheckProtocol: HTTP
-      HealthCheckPath: !Sub '/pr-${PrNumber}/health'
+      HealthCheckPath: !Sub '${ApiBasePath}/health'
       HealthCheckIntervalSeconds: 30
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 2
@@ -108,30 +149,113 @@ Resources:
           Value: !Ref ProjectName
         - Key: Environment
           Value: !Ref EnvironmentName
-        - Key: PullRequest
-          Value: !Ref PrNumber
+        - Key: EnvironmentInstance
+          Value: !Ref EnvironmentId
 
-  BackendListenerRule:
+  TodoTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub 'ghprof-t-${EnvironmentId}-tg'
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 3000
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: !Sub '${ApiBasePath}/health/todo'
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      Matcher:
+        HttpCode: '200'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: EnvironmentInstance
+          Value: !Ref EnvironmentId
+
+  AuthTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub 'ghprof-a-${EnvironmentId}-tg'
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 3000
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: !Sub '${ApiBasePath}/health/auth'
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      Matcher:
+        HttpCode: '200'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: EnvironmentInstance
+          Value: !Ref EnvironmentId
+
+  AuthListenerRule:
     Type: AWS::ElasticLoadBalancingV2::ListenerRule
     Properties:
       ListenerArn: !Ref AlbListenerArn
-      Priority: !Ref RulePriority
+      Priority: !Ref AuthRulePriority
       Conditions:
         - Field: path-pattern
           PathPatternConfig:
             Values:
-              - !Sub '/pr-${PrNumber}'
-              - !Sub '/pr-${PrNumber}/*'
+              - !Sub '${ApiBasePath}/health/auth'
+              - !Sub '${ApiBasePath}/api/auth/*'
+              - !Sub '${ApiBasePath}/.well-known/*'
       Actions:
         - Type: forward
-          TargetGroupArn: !Ref BackendTargetGroup
+          TargetGroupArn: !Ref AuthTargetGroup
 
-  BackendTaskDefinition:
+  TodoListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref AlbListenerArn
+      Priority: !Ref TodoRulePriority
+      Conditions:
+        - Field: path-pattern
+          PathPatternConfig:
+            Values:
+              - !Sub '${ApiBasePath}/health/todo'
+              - !Sub '${ApiBasePath}/api/users/*/todos'
+              - !Sub '${ApiBasePath}/api/users/*/todos/*'
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TodoTargetGroup
+
+  ProfileListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref AlbListenerArn
+      Priority: !Ref ProfileRulePriority
+      Conditions:
+        - Field: path-pattern
+          PathPatternConfig:
+            Values:
+              - !Sub '${ApiBasePath}/health'
+              - !Sub '${ApiBasePath}/api/users'
+              - !Sub '${ApiBasePath}/api/users/*'
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref ProfileTargetGroup
+
+  ProfileTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
-      Family: !Sub '${ProjectName}-pr-${PrNumber}'
-      Cpu: '256'
-      Memory: '512'
+      Family: !Sub '${ProjectName}-profile-${EnvironmentId}'
+      Cpu: '512'
+      Memory: '1024'
       NetworkMode: awsvpc
       RequiresCompatibilities:
         - FARGATE
@@ -141,14 +265,94 @@ Resources:
         CpuArchitecture: X86_64
         OperatingSystemFamily: LINUX
       ContainerDefinitions:
-        - Name: backend
-          Image: !Ref ImageUri
+        - Name: profile
+          Image: !Ref ProfileImageUri
           Essential: true
           PortMappings:
-            - Name: http
+            - Name: profile-http
               ContainerPort: 3000
               HostPort: 3000
               Protocol: tcp
+              AppProtocol: http
+            - Name: profile-grpc
+              ContainerPort: 50051
+              HostPort: 50051
+              Protocol: tcp
+              AppProtocol: grpc
+          Environment:
+            - Name: PORT
+              Value: '3000'
+            - Name: GRPC_PORT
+              Value: '50051'
+            - Name: DATABASE_MAX_CONNECTIONS
+              Value: '5'
+            - Name: DB_HOST
+              Value: !Ref DatabaseHost
+            - Name: DB_PORT
+              Value: '5432'
+            - Name: DB_NAME
+              Value: !Ref DatabaseName
+            - Name: DB_SCHEMA
+              Value: !Ref DatabaseSchema
+            - Name: DB_SSL_MODE
+              Value: require
+            - Name: API_BASE_PATH
+              Value: !Ref ApiBasePath
+            - Name: ALLOWED_ORIGIN
+              Value: !Ref FrontendOrigin
+            - Name: RUST_LOG
+              Value: info
+            - Name: AUTH_ISSUER
+              Value: !Sub '${ApiOrigin}${ApiBasePath}'
+            - Name: AUTH_AUDIENCE
+              Value: github-profile
+            - Name: AUTH_JWKS_URL
+              Value: !Sub 'http://auth-${EnvironmentId}:3000${ApiBasePath}/.well-known/jwks.json'
+          Secrets:
+            - Name: DB_USERNAME
+              ValueFrom: !Sub '${RdsSecretArn}:username::'
+            - Name: DB_PASSWORD
+              ValueFrom: !Sub '${RdsSecretArn}:password::'
+            - Name: TOKEN_ENCRYPTION_KEY
+              ValueFrom: !Ref TokenEncryptionSecretArn
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ProfileLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: profile
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: EnvironmentInstance
+          Value: !Ref EnvironmentId
+
+  TodoTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${ProjectName}-todo-${EnvironmentId}'
+      Cpu: '512'
+      Memory: '1024'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !Ref EcsTaskExecutionRoleArn
+      TaskRoleArn: !Ref EcsTaskRoleArn
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ContainerDefinitions:
+        - Name: todo
+          Image: !Ref TodoImageUri
+          Essential: true
+          PortMappings:
+            - Name: todo-http
+              ContainerPort: 3000
+              HostPort: 3000
+              Protocol: tcp
+              AppProtocol: http
           Environment:
             - Name: PORT
               Value: '3000'
@@ -161,13 +365,95 @@ Resources:
             - Name: DB_NAME
               Value: !Ref DatabaseName
             - Name: DB_SCHEMA
-              Value: !Sub 'pr_${PrNumber}'
+              Value: !Ref DatabaseSchema
             - Name: DB_SSL_MODE
               Value: require
             - Name: API_BASE_PATH
-              Value: !Sub '/pr-${PrNumber}'
+              Value: !Ref ApiBasePath
             - Name: ALLOWED_ORIGIN
               Value: !Ref FrontendOrigin
+            - Name: PROFILE_GRPC_ADDR
+              Value: !Sub 'profile-${EnvironmentId}:50051'
+            - Name: AUTH_ISSUER
+              Value: !Sub '${ApiOrigin}${ApiBasePath}'
+            - Name: AUTH_AUDIENCE
+              Value: github-profile
+            - Name: AUTH_JWKS_URL
+              Value: !Sub 'http://auth-${EnvironmentId}:3000${ApiBasePath}/.well-known/jwks.json'
+          Secrets:
+            - Name: DB_USERNAME
+              ValueFrom: !Sub '${RdsSecretArn}:username::'
+            - Name: DB_PASSWORD
+              ValueFrom: !Sub '${RdsSecretArn}:password::'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref TodoLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: todo
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: EnvironmentInstance
+          Value: !Ref EnvironmentId
+
+  AuthTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${ProjectName}-auth-${EnvironmentId}'
+      Cpu: '512'
+      Memory: '1024'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !Ref EcsTaskExecutionRoleArn
+      TaskRoleArn: !Ref AuthTaskRoleArn
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ContainerDefinitions:
+        - Name: auth
+          Image: !Ref AuthImageUri
+          Essential: true
+          PortMappings:
+            - Name: auth-http
+              ContainerPort: 3000
+              HostPort: 3000
+              Protocol: tcp
+              AppProtocol: http
+          Environment:
+            - Name: PORT
+              Value: '3000'
+            - Name: DATABASE_MAX_CONNECTIONS
+              Value: '5'
+            - Name: DB_HOST
+              Value: !Ref DatabaseHost
+            - Name: DB_PORT
+              Value: '5432'
+            - Name: DB_NAME
+              Value: !Ref DatabaseName
+            - Name: DB_SCHEMA
+              Value: !Ref DatabaseSchema
+            - Name: DB_SSL_MODE
+              Value: require
+            - Name: API_BASE_PATH
+              Value: !Ref ApiBasePath
+            - Name: ALLOWED_ORIGIN
+              Value: !Ref FrontendOrigin
+            - Name: JWT_ISSUER
+              Value: !Sub '${ApiOrigin}${ApiBasePath}'
+            - Name: JWT_AUDIENCE
+              Value: github-profile
+            - Name: KMS_SIGNING_KEY_ID
+              Value: !GetAtt JwtSigningKey.Arn
+            - Name: COOKIE_SECURE
+              Value: 'true'
+            - Name: COOKIE_SAME_SITE
+              Value: None
+            - Name: COOKIE_PATH
+              Value: !Sub '${ApiBasePath}/api/auth'
             - Name: RUST_LOG
               Value: info
           Secrets:
@@ -175,37 +461,38 @@ Resources:
               ValueFrom: !Sub '${RdsSecretArn}:username::'
             - Name: DB_PASSWORD
               ValueFrom: !Sub '${RdsSecretArn}:password::'
-            - Name: TOKEN_ENCRYPTION_KEY
-              ValueFrom: !Ref TokenEncryptionSecretArn
           LogConfiguration:
             LogDriver: awslogs
             Options:
-              awslogs-group: !Ref BackendLogGroup
+              awslogs-group: !Ref AuthLogGroup
               awslogs-region: !Ref AWS::Region
-              awslogs-stream-prefix: backend
+              awslogs-stream-prefix: auth
       Tags:
         - Key: Project
           Value: !Ref ProjectName
         - Key: Environment
           Value: !Ref EnvironmentName
-        - Key: PullRequest
-          Value: !Ref PrNumber
+        - Key: EnvironmentInstance
+          Value: !Ref EnvironmentId
 
-  BackendService:
+  AuthService:
     Type: AWS::ECS::Service
     DependsOn:
-      - BackendListenerRule
+      - AuthListenerRule
     Properties:
-      ServiceName: !Sub '${ProjectName}-pr-${PrNumber}'
+      ServiceName: !Sub '${ProjectName}-auth-${EnvironmentId}'
       Cluster: !Ref EcsCluster
-      TaskDefinition: !Ref BackendTaskDefinition
+      TaskDefinition: !Ref AuthTaskDefinition
       DesiredCount: 1
       LaunchType: FARGATE
-      PlatformVersion: LATEST
+      PlatformVersion: 1.4.0
       HealthCheckGracePeriodSeconds: 90
       DeploymentConfiguration:
         MinimumHealthyPercent: 0
         MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
       NetworkConfiguration:
         AwsvpcConfiguration:
           AssignPublicIp: DISABLED
@@ -213,11 +500,18 @@ Resources:
           SecurityGroups:
             - !Ref EcsSecurityGroupId
       LoadBalancers:
-        - TargetGroupArn: !Ref BackendTargetGroup
-          ContainerName: backend
+        - TargetGroupArn: !Ref AuthTargetGroup
+          ContainerName: auth
           ContainerPort: 3000
-      ServiceRegistries:
-        - RegistryArn: !GetAtt DiscoveryService.Arn
+      ServiceConnectConfiguration:
+        Enabled: true
+        Namespace: !Ref CloudMapNamespaceArn
+        Services:
+          - PortName: auth-http
+            DiscoveryName: !Sub 'auth-${EnvironmentId}'
+            ClientAliases:
+              - DnsName: !Sub 'auth-${EnvironmentId}'
+                Port: 3000
       EnableECSManagedTags: true
       PropagateTags: SERVICE
       Tags:
@@ -225,21 +519,127 @@ Resources:
           Value: !Ref ProjectName
         - Key: Environment
           Value: !Ref EnvironmentName
-        - Key: PullRequest
-          Value: !Ref PrNumber
+        - Key: EnvironmentInstance
+          Value: !Ref EnvironmentId
+
+  ProfileService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - ProfileListenerRule
+      - AuthService
+    Properties:
+      ServiceName: !Sub '${ProjectName}-profile-${EnvironmentId}'
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref ProfileTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      PlatformVersion: 1.4.0
+      HealthCheckGracePeriodSeconds: 90
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 0
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups:
+            - !Ref EcsSecurityGroupId
+      LoadBalancers:
+        - TargetGroupArn: !Ref ProfileTargetGroup
+          ContainerName: profile
+          ContainerPort: 3000
+      ServiceConnectConfiguration:
+        Enabled: true
+        Namespace: !Ref CloudMapNamespaceArn
+        Services:
+          - PortName: profile-grpc
+            DiscoveryName: !Sub 'profile-${EnvironmentId}'
+            ClientAliases:
+              - DnsName: !Sub 'profile-${EnvironmentId}'
+                Port: 50051
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: EnvironmentInstance
+          Value: !Ref EnvironmentId
+
+  TodoService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - TodoListenerRule
+      - ProfileService
+      - AuthService
+    Properties:
+      ServiceName: !Sub '${ProjectName}-todo-${EnvironmentId}'
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref TodoTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      PlatformVersion: 1.4.0
+      HealthCheckGracePeriodSeconds: 90
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 0
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups:
+            - !Ref EcsSecurityGroupId
+      LoadBalancers:
+        - TargetGroupArn: !Ref TodoTargetGroup
+          ContainerName: todo
+          ContainerPort: 3000
+      ServiceConnectConfiguration:
+        Enabled: true
+        Namespace: !Ref CloudMapNamespaceArn
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+        - Key: EnvironmentInstance
+          Value: !Ref EnvironmentId
 
 Outputs:
   ApiBaseUrl:
     Description: API base URL used by the frontend build.
-    Value: !Sub '${ApiOrigin}/pr-${PrNumber}/api'
-  HealthUrl:
-    Description: Backend health check URL.
-    Value: !Sub '${ApiOrigin}/pr-${PrNumber}/health'
-  EcsServiceName:
-    Value: !GetAtt BackendService.Name
-  TaskDefinitionArn:
-    Value: !Ref BackendTaskDefinition
-  CloudMapServiceArn:
-    Value: !GetAtt DiscoveryService.Arn
+    Value: !Sub '${ApiOrigin}${ApiBasePath}/api'
+  ProfileHealthUrl:
+    Value: !Sub '${ApiOrigin}${ApiBasePath}/health'
+  TodoHealthUrl:
+    Value: !Sub '${ApiOrigin}${ApiBasePath}/health/todo'
+  AuthHealthUrl:
+    Value: !Sub '${ApiOrigin}${ApiBasePath}/health/auth'
+  AuthServiceName:
+    Value: !GetAtt AuthService.Name
+  ProfileServiceName:
+    Value: !GetAtt ProfileService.Name
+  TodoServiceName:
+    Value: !GetAtt TodoService.Name
+  ProfileTaskDefinitionArn:
+    Value: !Ref ProfileTaskDefinition
+  TodoTaskDefinitionArn:
+    Value: !Ref TodoTaskDefinition
+  AuthTaskDefinitionArn:
+    Value: !Ref AuthTaskDefinition
+  ProfileServiceConnectEndpoint:
+    Value: !Sub 'profile-${EnvironmentId}:50051'
+  AuthServiceConnectEndpoint:
+    Value: !Sub 'auth-${EnvironmentId}:3000'
+  JwtSigningKeyArn:
+    Value: !GetAtt JwtSigningKey.Arn
   DatabaseSchema:
-    Value: !Sub 'pr_${PrNumber}'
+    Value: !Ref DatabaseSchema

@@ -1,0 +1,86 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME:-postgres}
+      POSTGRES_USER: ${DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-postgres} -d ${DB_NAME:-postgres}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - github-profile-postgres:/var/lib/postgresql/data
+
+  profile:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      DATABASE_URL: postgres://${DB_USERNAME:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-postgres}?sslmode=disable
+      DATABASE_MAX_CONNECTIONS: "5"
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:?copy .env.example to .env and set TOKEN_ENCRYPTION_KEY}
+      ALLOWED_ORIGIN: http://localhost:5173
+      PORT: "3000"
+      GRPC_PORT: "50051"
+      RUST_LOG: info
+      AUTH_ISSUER: http://auth:3000
+      AUTH_AUDIENCE: github-profile
+      AUTH_JWKS_URL: http://auth:3000/.well-known/jwks.json
+    ports:
+      - "3000:3000"
+      - "50051:50051"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth:
+        condition: service_started
+
+  auth:
+    build:
+      context: auth-service
+    environment:
+      DATABASE_URL: postgres://${DB_USERNAME:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-postgres}?sslmode=disable
+      DATABASE_MAX_CONNECTIONS: "5"
+      ALLOWED_ORIGIN: http://localhost:5173
+      PORT: "3000"
+      JWT_ISSUER: http://auth:3000
+      JWT_AUDIENCE: github-profile
+      ACCESS_TOKEN_TTL_SECONDS: "900"
+      REFRESH_TOKEN_TTL_SECONDS: "2592000"
+      COOKIE_SECURE: "false"
+      RUST_LOG: info
+    ports:
+      - "3002:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  todo:
+    build:
+      context: .
+      dockerfile: todo-service/Dockerfile
+    environment:
+      DATABASE_URL: postgres://${DB_USERNAME:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-postgres}?sslmode=disable
+      DATABASE_MAX_CONNECTIONS: "5"
+      PROFILE_GRPC_ADDR: profile:50051
+      ALLOWED_ORIGIN: http://localhost:5173
+      PORT: "3000"
+      AUTH_ISSUER: http://auth:3000
+      AUTH_AUDIENCE: github-profile
+      AUTH_JWKS_URL: http://auth:3000/.well-known/jwks.json
+    ports:
+      - "3001:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      profile:
+        condition: service_started
+      auth:
+        condition: service_started
+
+volumes:
+  github-profile-postgres:

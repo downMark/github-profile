@@ -1,10 +1,11 @@
-FROM rust:1-bookworm AS builder
+FROM rust:1.94-bookworm AS builder
 
-WORKDIR /app
+WORKDIR /workspace/backend
 
-COPY Cargo.toml Cargo.lock ./
-COPY migrations ./migrations
-COPY src ./src
+COPY backend/Cargo.toml backend/Cargo.lock backend/build.rs ./
+COPY backend/migrations ./migrations
+COPY backend/src ./src
+COPY contracts /workspace/contracts
 
 RUN cargo build --release --locked
 
@@ -16,9 +17,10 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY --from=builder /app/target/release/github-profile-api /usr/local/bin/github-profile-api
+COPY --from=builder /workspace/backend/target/release/github-profile-api /usr/local/bin/github-profile-api
 
 ENV PORT=3000
-EXPOSE 3000
+ENV GRPC_PORT=50051
+EXPOSE 3000 50051
 
 CMD ["github-profile-api"]

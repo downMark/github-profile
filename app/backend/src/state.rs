@@ -1,5 +1,6 @@
 use sqlx::PgPool;
 
+use crate::infrastructure::auth::AuthVerifier;
 use crate::infrastructure::crypto::TokenCipher;
 use crate::infrastructure::github::GithubClient;
 
@@ -11,10 +12,16 @@ pub struct AppState {
     pub db: PgPool,
     pub cipher: TokenCipher,
     pub github: GithubClient,
+    pub auth: AuthVerifier,
 }
 
 impl AppState {
-    pub fn new(db: PgPool, cipher: TokenCipher, github: GithubClient) -> Self {
-        Self { db, cipher, github }
+    pub fn new(db: PgPool, cipher: TokenCipher, github: GithubClient, auth: AuthVerifier) -> Self {
+        Self {
+            db,
+            cipher,
+            github,
+            auth,
+        }
     }
 }

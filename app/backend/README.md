@@ -1,6 +1,6 @@
 # Backend
 
-Rust/Axum API。当前云端部署目标是 ECS Fargate，同时保留本地 HTTP 和 Lambda Runtime 兼容入口。
+Rust/Axum Profile API。当前云端部署目标是 ECS Fargate，同时保留本地 HTTP 和 Lambda Runtime 兼容入口；ECS/本地模式额外提供内部 gRPC 用户查询服务。
 
 ## 本地运行
 
@@ -10,7 +10,7 @@ Rust/Axum API。当前云端部署目标是 ECS Fargate，同时保留本地 HTT
 cargo run
 ```
 
-服务默认监听 `http://localhost:3000`，启动时自动执行 migration。
+HTTP 默认监听 `http://localhost:3000`，gRPC 默认监听 `localhost:50051`，启动时自动执行 migration。Lambda 模式只运行 HTTP Router。
 
 ## 验证
 
@@ -22,10 +22,10 @@ cargo test --locked
 
 ## 容器构建
 
-在仓库根目录运行：
+Docker 构建需要共享 proto，因此在仓库根目录使用 `app` 作为构建上下文：
 
 ```bash
-docker build --tag github-profile-backend:local app/backend
+docker build --file app/backend/Dockerfile --tag github-profile-profile:local app
 ```
 
 PR 云端环境由根目录 `infra/pr-environment.yaml` 和 `.github/workflows/pr-environment.yml` 管理。数据库凭据与 Token 加密密钥由 ECS 从 Secrets Manager 注入，不写入镜像。

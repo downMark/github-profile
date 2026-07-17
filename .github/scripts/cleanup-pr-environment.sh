@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-required=(AWS_REGION PR_NUMBER ECS_CLUSTER PRIVATE_SUBNETS ECS_SECURITY_GROUP ECR_REPOSITORY RESOURCE_PREFIX)
+required=(AWS_REGION PR_NUMBER ECS_CLUSTER PRIVATE_SUBNETS ECS_SECURITY_GROUP AUTH_ECR_REPOSITORY PROFILE_ECR_REPOSITORY TODO_ECR_REPOSITORY RESOURCE_PREFIX)
 for name in "${required[@]}"; do
   if [[ -z "${!name:-}" ]]; then
     echo "Missing GitHub repository variable: ${name}" >&2
@@ -24,7 +24,7 @@ stack_status="$(aws cloudformation describe-stacks \
 if [[ -n "${stack_status}" ]]; then
   task_definition="$(aws cloudformation describe-stacks \
     --stack-name "${STACK_NAME}" \
-    --query "Stacks[0].Outputs[?OutputKey=='TaskDefinitionArn'].OutputValue" \
+    --query "Stacks[0].Outputs[?OutputKey=='ProfileTaskDefinitionArn'].OutputValue" \
     --output text)"
 
   if [[ -n "${task_definition}" ]]; then
@@ -33,7 +33,7 @@ if [[ -n "${stack_status}" ]]; then
       --task-definition "${task_definition}" \
       --launch-type FARGATE \
       --network-configuration "awsvpcConfiguration={subnets=[${PRIVATE_SUBNETS}],securityGroups=[${ECS_SECURITY_GROUP}],assignPublicIp=DISABLED}" \
-      --overrides '{"containerOverrides":[{"name":"backend","environment":[{"name":"DB_SCHEMA_ACTION","value":"drop"}]}]}' \
+      --overrides '{"containerOverrides":[{"name":"profile","environment":[{"name":"DB_SCHEMA_ACTION","value":"drop"}]}]}' \
       --query 'tasks[0].taskArn' \
       --output text)"
 
@@ -46,7 +46,7 @@ if [[ -n "${stack_status}" ]]; then
     cleanup_exit_code="$(aws ecs describe-tasks \
       --cluster "${ECS_CLUSTER}" \
       --tasks "${cleanup_task}" \
-      --query 'tasks[0].containers[?name==`backend`].exitCode | [0]' \
+      --query 'tasks[0].containers[?name==`profile`].exitCode | [0]' \
       --output text)"
     if [[ "${cleanup_exit_code}" != "0" ]]; then
       echo "Schema cleanup task failed with exit code ${cleanup_exit_code}; stack deletion stopped" >&2
@@ -58,15 +58,17 @@ if [[ -n "${stack_status}" ]]; then
   aws cloudformation wait stack-delete-complete --stack-name "${STACK_NAME}"
 fi
 
-image_ids="$(aws ecr describe-images \
-  --repository-name "${ECR_REPOSITORY}" \
-  --query "imageDetails[?imageTags[?starts_with(@, 'pr-${PR_NUMBER}-')]].imageDigest" \
-  --output text)"
+for repository in "${AUTH_ECR_REPOSITORY}" "${PROFILE_ECR_REPOSITORY}" "${TODO_ECR_REPOSITORY}"; do
+  image_ids="$(aws ecr describe-images \
+    --repository-name "${repository}" \
+    --query "imageDetails[?imageTags[?starts_with(@, 'pr-${PR_NUMBER}-')]].imageDigest" \
+    --output text)"
 
-for digest in ${image_ids}; do
-  aws ecr batch-delete-image \
-    --repository-name "${ECR_REPOSITORY}" \
-    --image-ids imageDigest="${digest}" >/dev/null
+  for digest in ${image_ids}; do
+    aws ecr batch-delete-image \
+      --repository-name "${repository}" \
+      --image-ids imageDigest="${digest}" >/dev/null
+  done
 done
 
-echo "PR ${PR_NUMBER} database schema, CloudFormation stack, and ECR images were cleaned up"
+echo "PR ${PR_NUMBER} database schema, CloudFormation stack, and ECR images were cleaned up; the KMS key was scheduled for deletion"

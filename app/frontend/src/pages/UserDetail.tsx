@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { getUser, refreshUser } from '../api/users'
 import ProfileCard from '../components/ProfileCard'
+import TodoPanel from '../components/TodoPanel'
 import type { GithubUser } from '../types/user'
 import './UserDetail.css'
 
@@ -72,7 +73,10 @@ export default function UserDetail() {
       {loading ? (
         <p className="user-detail__status">加载中…</p>
       ) : user ? (
-        <ProfileCard user={user} />
+        <>
+          <ProfileCard user={user} />
+          <TodoPanel userId={user.id} />
+        </>
       ) : (
         !error && <p className="user-detail__status">未找到该用户</p>
       )}

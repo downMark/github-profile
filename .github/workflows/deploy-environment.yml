@@ -1,0 +1,175 @@
+name: Deploy Long-lived Environment
+
+on:
+  push:
+    branches: [main, stg]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy ${{ github.ref_name == 'main' && 'production' || 'staging' }}
+    if: github.ref_name == 'main' || github.ref_name == 'stg'
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      SHARED_CONFIG_PARAMETER: ${{ vars.SHARED_CONFIG_PARAMETER }}
+    steps:
+      - name: Check out commit
+        uses: actions/checkout@v4
+
+      - name: Validate bootstrap configuration
+        run: .github/scripts/validate-bootstrap.sh
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Load shared deployment configuration
+        uses: ./.github/actions/load-deployment-config
+        with:
+          parameter-name: ${{ env.SHARED_CONFIG_PARAMETER }}
+
+      - name: Select environment
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
+            {
+              echo "ENVIRONMENT_ID=prod"
+              echo "DATABASE_SCHEMA=prod"
+              echo "API_BASE_PATH="
+              echo "FRONTEND_ORIGIN=${PRODUCTION_FRONTEND_ORIGIN}"
+              echo "AUTH_RULE_PRIORITY=100"
+              echo "TODO_RULE_PRIORITY=101"
+              echo "PROFILE_RULE_PRIORITY=102"
+              echo "CLOUDFLARE_BRANCH=main"
+            } >> "${GITHUB_ENV}"
+          else
+            {
+              echo "ENVIRONMENT_ID=staging"
+              echo "DATABASE_SCHEMA=staging"
+              echo "API_BASE_PATH=/staging"
+              echo "FRONTEND_ORIGIN=${STAGING_FRONTEND_ORIGIN}"
+              echo "AUTH_RULE_PRIORITY=110"
+              echo "TODO_RULE_PRIORITY=111"
+              echo "PROFILE_RULE_PRIORITY=112"
+              echo "CLOUDFLARE_BRANCH=stg"
+            } >> "${GITHUB_ENV}"
+          fi
+
+      - name: Test and build service images in CodeBuild
+        id: codebuild
+        env:
+          HEAD_SHA: ${{ github.sha }}
+        run: .github/scripts/run-codebuild-batch.sh
+
+      - name: Deploy service stack
+        env:
+          AUTH_IMAGE_URI: ${{ steps.codebuild.outputs.auth-image-uri }}
+          PROFILE_IMAGE_URI: ${{ steps.codebuild.outputs.profile-image-uri }}
+          TODO_IMAGE_URI: ${{ steps.codebuild.outputs.todo-image-uri }}
+        run: |
+          set -euo pipefail
+          STACK_NAME="${RESOURCE_PREFIX}-${ENVIRONMENT_ID}"
+          aws cloudformation deploy \
+            --stack-name "${STACK_NAME}" \
+            --template-file infra/pr-environment.yaml \
+            --role-arn "${CLOUDFORMATION_ROLE_ARN}" \
+            --no-fail-on-empty-changeset \
+            --tags Project="${RESOURCE_PREFIX}" Environment="${ENVIRONMENT_ID}" \
+            --parameter-overrides \
+              ProjectName="${RESOURCE_PREFIX}" \
+              EnvironmentName="${ENVIRONMENT_ID}" \
+              EnvironmentId="${ENVIRONMENT_ID}" \
+              DatabaseSchema="${DATABASE_SCHEMA}" \
+              ApiBasePath="${API_BASE_PATH}" \
+              AuthRulePriority="${AUTH_RULE_PRIORITY}" \
+              TodoRulePriority="${TODO_RULE_PRIORITY}" \
+              ProfileRulePriority="${PROFILE_RULE_PRIORITY}" \
+              AuthImageUri="${AUTH_IMAGE_URI}" \
+              ProfileImageUri="${PROFILE_IMAGE_URI}" \
+              TodoImageUri="${TODO_IMAGE_URI}" \
+              EcsCluster="${ECS_CLUSTER}" \
+              VpcId="${VPC_ID}" \
+              PrivateSubnetIds="${PRIVATE_SUBNETS}" \
+              EcsSecurityGroupId="${ECS_SECURITY_GROUP}" \
+              AlbListenerArn="${ALB_LISTENER_ARN}" \
+              ApiOrigin="${API_ORIGIN}" \
+              FrontendOrigin="${FRONTEND_ORIGIN}" \
+              CloudMapNamespaceArn="${CLOUD_MAP_NAMESPACE_ARN}" \
+              EcsTaskExecutionRoleArn="${ECS_TASK_EXECUTION_ROLE_ARN}" \
+              AuthTaskRoleArn="${AUTH_TASK_ROLE_ARN}" \
+              EcsTaskRoleArn="${ECS_TASK_ROLE_ARN}" \
+              RdsSecretArn="${RDS_SECRET_ARN}" \
+              TokenEncryptionSecretArn="${TOKEN_ENCRYPTION_SECRET_ARN}" \
+              DatabaseHost="${DB_HOST}" \
+              DatabaseName="${DB_NAME:-postgres}"
+
+      - name: Read stack API URL and verify services
+        id: stack
+        run: |
+          set -euo pipefail
+          STACK_NAME="${RESOURCE_PREFIX}-${ENVIRONMENT_ID}"
+          API_BASE_URL="$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='ApiBaseUrl'].OutputValue" --output text)"
+          AUTH_HEALTH_URL="$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='AuthHealthUrl'].OutputValue" --output text)"
+          PROFILE_HEALTH_URL="$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='ProfileHealthUrl'].OutputValue" --output text)"
+          TODO_HEALTH_URL="$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='TodoHealthUrl'].OutputValue" --output text)"
+          echo "api-base-url=${API_BASE_URL}" >> "${GITHUB_OUTPUT}"
+          curl --fail --silent --show-error --retry 10 --retry-delay 6 "${AUTH_HEALTH_URL}"
+          curl --fail --silent --show-error --retry 10 --retry-delay 6 "${PROFILE_HEALTH_URL}"
+          curl --fail --silent --show-error --retry 10 --retry-delay 6 "${TODO_HEALTH_URL}"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: app/frontend/package-lock.json
+
+      - name: Test and build frontend
+        working-directory: app/frontend
+        env:
+          VITE_API_BASE_URL: ${{ steps.stack.outputs.api-base-url }}
+        run: |
+          npm ci
+          npm test -- --run
+          npm run lint
+          npm run build
+
+      - name: Read Cloudflare API token
+        id: cloudflare-token
+        run: |
+          set -euo pipefail
+          token="$(aws secretsmanager get-secret-value --secret-id "${CLOUDFLARE_API_TOKEN_SECRET_ARN}" --query SecretString --output text)"
+          echo "::add-mask::${token}"
+          echo "token=${token}" >> "${GITHUB_OUTPUT}"
+
+      - name: Deploy Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ steps.cloudflare-token.outputs.token }}
+          accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: app/frontend
+          command: pages deploy dist --project-name=${{ env.CLOUDFLARE_PROJECT_NAME }} --branch=${{ env.CLOUDFLARE_BRANCH }}
+
+      - name: Publish deployment summary
+        run: |
+          {
+            echo "### ${ENVIRONMENT_ID} deployment"
+            echo
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Frontend: ${FRONTEND_ORIGIN}"
+            echo "- API: ${{ steps.stack.outputs.api-base-url }}"
+            echo "- CodeBuild batch: \`${{ steps.codebuild.outputs.batch-id }}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"

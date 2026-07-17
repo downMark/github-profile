@@ -2,6 +2,9 @@ AWS.md
 
 # Build outputs and dependencies
 app/backend/target/
+app/auth-service/target/
+app/todo-service/bin/
+app/todo-service/internal/gen/
 app/frontend/node_modules/
 app/frontend/dist/
 

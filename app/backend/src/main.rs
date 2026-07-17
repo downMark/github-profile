@@ -3,10 +3,12 @@ mod application;
 mod config;
 mod domain;
 mod errors;
+mod grpc;
 mod infrastructure;
 mod state;
 
 use config::Config;
+use infrastructure::auth::AuthVerifier;
 use infrastructure::crypto::TokenCipher;
 use infrastructure::github::GithubClient;
 use state::AppState;
@@ -34,8 +36,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing::info!("database connected, migrations up to date");
 
     let cipher = TokenCipher::from_hex_key(&config.token_encryption_key)?;
-    let state = AppState::new(pool, cipher, GithubClient::new());
-    let app = api::router::build(state, &config.allowed_origin, &config.api_base_path)?;
+    let auth = AuthVerifier::new(
+        &config.auth_issuer,
+        &config.auth_audience,
+        &config.auth_jwks_url,
+    );
+    let state = AppState::new(pool, cipher, GithubClient::new(), auth);
+    let app = api::router::build(state.clone(), &config.allowed_origin, &config.api_base_path)?;
 
     // 在 Lambda 运行时中由 API Gateway 事件驱动；本地开发直接起 HTTP 服务
     if std::env::var("AWS_LAMBDA_RUNTIME_API").is_ok() {
@@ -44,7 +51,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let addr = format!("0.0.0.0:{}", config.port);
         let listener = tokio::net::TcpListener::bind(&addr).await?;
         tracing::info!("listening on http://{addr}");
-        axum::serve(listener, app).await?;
+        let grpc_addr = format!("0.0.0.0:{}", config.grpc_port).parse()?;
+        let http_server = axum::serve(listener, app);
+        let grpc_server = grpc::profile::serve(grpc_addr, state);
+        tokio::select! {
+            result = http_server => result?,
+            result = grpc_server => result?,
+        }
         Ok(())
     }
 }

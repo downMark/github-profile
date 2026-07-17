@@ -19,6 +19,8 @@ pub enum DatabaseConnection {
 pub struct Config {
     /// 本地开发 HTTP 端口（Lambda 模式下不使用）
     pub port: u16,
+    /// ECS/本地内部 gRPC 端口；Lambda 模式不监听。
+    pub grpc_port: u16,
     /// PostgreSQL 连接信息。
     pub database: DatabaseConnection,
     /// PR 环境使用的独立 schema；本地未设置时使用数据库默认 search_path。
@@ -33,6 +35,9 @@ pub struct Config {
     pub allowed_origin: String,
     /// ALB 为每个 PR 分配的路径前缀，如 `/pr-123`。
     pub api_base_path: String,
+    pub auth_issuer: String,
+    pub auth_audience: String,
+    pub auth_jwks_url: String,
 }
 
 impl Config {
@@ -42,6 +47,10 @@ impl Config {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(3000);
+        let grpc_port = std::env::var("GRPC_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50051);
         let database = match std::env::var("DATABASE_URL") {
             Ok(url) => DatabaseConnection::Url(url),
             Err(_) => DatabaseConnection::Components {
@@ -58,9 +67,18 @@ impl Config {
         };
         let database_schema = std::env::var("DB_SCHEMA").ok();
         if let Some(schema) = &database_schema {
-            assert!(valid_pr_schema(schema), "DB_SCHEMA must match pr_<number>");
+            assert!(
+                valid_schema(schema),
+                "DB_SCHEMA must be prod, staging or pr_<number>"
+            );
         }
         let database_schema_action = std::env::var("DB_SCHEMA_ACTION").ok();
+        if database_schema_action.as_deref() == Some("drop") {
+            assert!(
+                database_schema.as_deref().is_some_and(valid_pr_schema),
+                "DB_SCHEMA_ACTION=drop is only allowed for pr_<number>"
+            );
+        }
         let database_max_connections = std::env::var("DATABASE_MAX_CONNECTIONS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -70,6 +88,9 @@ impl Config {
         let allowed_origin =
             std::env::var("ALLOWED_ORIGIN").unwrap_or_else(|_| "http://localhost:5173".into());
         let api_base_path = std::env::var("API_BASE_PATH").unwrap_or_default();
+        let auth_issuer = required_env("AUTH_ISSUER");
+        let auth_audience = required_env("AUTH_AUDIENCE");
+        let auth_jwks_url = required_env("AUTH_JWKS_URL");
         assert!(
             api_base_path.is_empty()
                 || (api_base_path.starts_with('/') && !api_base_path.ends_with('/')),
@@ -77,6 +98,7 @@ impl Config {
         );
         Self {
             port,
+            grpc_port,
             database,
             database_schema,
             database_schema_action,
@@ -84,6 +106,9 @@ impl Config {
             token_encryption_key,
             allowed_origin,
             api_base_path,
+            auth_issuer,
+            auth_audience,
+            auth_jwks_url,
         }
     }
 }
@@ -98,9 +123,13 @@ fn valid_pr_schema(schema: &str) -> bool {
         .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
 }
 
+fn valid_schema(schema: &str) -> bool {
+    matches!(schema, "prod" | "staging") || valid_pr_schema(schema)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::valid_pr_schema;
+    use super::{valid_pr_schema, valid_schema};
 
     #[test]
     fn validates_pr_schema_names() {
@@ -108,5 +137,7 @@ mod tests {
         assert!(!valid_pr_schema("pr_"));
         assert!(!valid_pr_schema("public"));
         assert!(!valid_pr_schema("pr_1;drop schema public"));
+        assert!(valid_schema("prod"));
+        assert!(valid_schema("staging"));
     }
 }

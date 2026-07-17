@@ -17,6 +17,8 @@ impl IntoResponse for AppError {
             AppError::Validation(_) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR"),
             AppError::InvalidGithubToken => (StatusCode::BAD_REQUEST, "INVALID_GITHUB_TOKEN"),
             AppError::NotFound => (StatusCode::NOT_FOUND, "NOT_FOUND"),
+            AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED"),
+            AppError::AuthUnavailable => (StatusCode::SERVICE_UNAVAILABLE, "AUTH_UNAVAILABLE"),
             AppError::Infra(err) => {
                 tracing::error!(error = %err, "infrastructure error");
                 (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR")

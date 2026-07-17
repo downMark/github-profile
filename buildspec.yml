@@ -1,0 +1,11 @@
+version: 0.2
+
+batch:
+  build-list:
+    - identifier: auth
+      buildspec: .codebuild/auth.yml
+    - identifier: profile
+      buildspec: .codebuild/profile.yml
+    - identifier: todo
+      buildspec: .codebuild/todo.yml
+

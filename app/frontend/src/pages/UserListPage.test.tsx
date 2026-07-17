@@ -3,6 +3,10 @@ import { MemoryRouter } from 'react-router-dom'
 import { expect, test, vi } from 'vitest'
 import UserListPage from './UserListPage'
 
+vi.mock('../auth/AuthContext', () => ({
+  useAuth: () => ({ account: { id: 'account-1', username: 'demo' }, logout: vi.fn() }),
+}))
+
 test('loads the fixed list contract and exposes the import form', async () => {
   const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
     new Response(JSON.stringify({ items: [], total: 0, page: 1, limit: 20 }), {

@@ -4,6 +4,7 @@ import type { GithubUser } from '../types/user'
 import UserCard from '../components/UserCard'
 import TokenInput from '../components/TokenInput'
 import './UserListPage.css'
+import { useAuth } from '../auth/AuthContext'
 
 const PAGE_LIMIT = 20
 
@@ -11,6 +12,7 @@ type LoadState = 'loading' | 'error' | 'ready'
 
 /** 用户列表页：卡片网格 + 分页，点击卡片跳转详情（design.md 模块 2 / T-010） */
 export default function UserListPage() {
+  const { account, logout } = useAuth()
   const [users, setUsers] = useState<GithubUser[]>([])
   const [page, setPage] = useState(1)
   const [state, setState] = useState<LoadState>('loading')
@@ -38,8 +40,8 @@ export default function UserListPage() {
   return (
     <main className="user-list-page">
       <header className="user-list-page__header">
-        <h1>用户列表</h1>
-        <p>已入库的 GitHub 用户，点击卡片查看详情</p>
+        <div><h1>GitHub 账号</h1><p>已归属于当前系统账号的 GitHub 用户</p></div>
+        <div className="user-list-page__account"><span>{account?.username}</span><button type="button" onClick={() => void logout()}>退出</button></div>
       </header>
 
       <TokenInput

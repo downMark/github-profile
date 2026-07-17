@@ -1,6 +1,6 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -22,14 +22,17 @@ pub struct ListQuery {
 
 pub async fn import_user(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<ImportUserBody>,
 ) -> Result<(StatusCode, Json<GithubUser>), AppError> {
-    let user = user_service::import(&state, &body.token).await?;
+    let auth = state.auth.authenticate_headers(&headers).await?;
+    let user = user_service::import(&state, auth.account_id, &body.token).await?;
     Ok((StatusCode::CREATED, Json(user)))
 }
 
 pub async fn list_users(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<UserList>, AppError> {
     let page = query.page.unwrap_or(1);
@@ -39,21 +42,32 @@ pub async fn list_users(
             "page 必须大于等于 1，limit 必须在 1 到 100 之间".into(),
         ));
     }
-    Ok(Json(user_service::list(&state, page, limit).await?))
+    let auth = state.auth.authenticate_headers(&headers).await?;
+    Ok(Json(
+        user_service::list(&state, auth.account_id, page, limit).await?,
+    ))
 }
 
 pub async fn get_user(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<GithubUser>, AppError> {
-    Ok(Json(user_service::get(&state, parse_id(&id)?).await?))
+    let auth = state.auth.authenticate_headers(&headers).await?;
+    Ok(Json(
+        user_service::get(&state, auth.account_id, parse_id(&id)?).await?,
+    ))
 }
 
 pub async fn refresh_user(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<GithubUser>, AppError> {
-    Ok(Json(user_service::refresh(&state, parse_id(&id)?).await?))
+    let auth = state.auth.authenticate_headers(&headers).await?;
+    Ok(Json(
+        user_service::refresh(&state, auth.account_id, parse_id(&id)?).await?,
+    ))
 }
 
 fn parse_id(id: &str) -> Result<Uuid, AppError> {
