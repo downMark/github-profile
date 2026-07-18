@@ -52,7 +52,10 @@ func run(logger *slog.Logger) error {
 
 	todos := service.New(profiles, postgres.NewRepository(pool))
 	verifier := auth.New(config.AuthIssuer, config.AuthAudience, config.AuthJWKSURL)
-	handler := httpapi.New(todos, verifier, logger, config.AllowedOrigin, config.APIBasePath)
+	handler := httpapi.NewWithDeployment(
+		todos, verifier, logger, config.AllowedOrigin, config.APIBasePath,
+		config.DeployEnvironment, config.ServiceRevision,
+	)
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", config.Port),
 		Handler:           handler,

@@ -19,6 +19,8 @@ type Config struct {
 	AuthIssuer             string
 	AuthAudience           string
 	AuthJWKSURL            string
+	DeployEnvironment      string
+	ServiceRevision        string
 }
 
 func Load() (Config, error) {
@@ -55,6 +57,8 @@ func Load() (Config, error) {
 		AuthIssuer:             envOr("AUTH_ISSUER", "http://localhost:3002"),
 		AuthAudience:           envOr("AUTH_AUDIENCE", "github-profile"),
 		AuthJWKSURL:            envOr("AUTH_JWKS_URL", "http://localhost:3002/.well-known/jwks.json"),
+		DeployEnvironment:      envOr("DEPLOY_ENVIRONMENT", "local"),
+		ServiceRevision:        envOr("SERVICE_REVISION", "development"),
 	}, nil
 }
 

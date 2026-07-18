@@ -92,6 +92,7 @@ jobs:
               ProjectName="${RESOURCE_PREFIX}" \
               EnvironmentName="${ENVIRONMENT_ID}" \
               EnvironmentId="${ENVIRONMENT_ID}" \
+              ServiceRevision="${GITHUB_SHA}" \
               DatabaseSchema="${DATABASE_SCHEMA}" \
               ApiBasePath="${API_BASE_PATH}" \
               AuthRulePriority="${AUTH_RULE_PRIORITY}" \

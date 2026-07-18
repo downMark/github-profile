@@ -1,7 +1,7 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::application::user_service;
@@ -18,6 +18,15 @@ pub struct ImportUserBody {
 pub struct ListQuery {
     page: Option<u32>,
     limit: Option<u32>,
+}
+
+#[derive(Serialize)]
+pub struct ServiceMockResponse {
+    service: &'static str,
+    status: &'static str,
+    message: &'static str,
+    environment: String,
+    revision: String,
 }
 
 pub async fn import_user(
@@ -46,6 +55,20 @@ pub async fn list_users(
     Ok(Json(
         user_service::list(&state, auth.account_id, page, limit).await?,
     ))
+}
+
+pub async fn mock(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<ServiceMockResponse>, AppError> {
+    state.auth.authenticate_headers(&headers).await?;
+    Ok(Json(ServiceMockResponse {
+        service: "profile",
+        status: "ok",
+        message: "GitHub 账号服务链路正常",
+        environment: state.deploy_environment.clone(),
+        revision: state.service_revision.clone(),
+    }))
 }
 
 pub async fn get_user(

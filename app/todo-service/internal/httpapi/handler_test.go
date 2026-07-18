@@ -68,3 +68,22 @@ func TestListResponseHasFixedShape(t *testing.T) {
 		}
 	}
 }
+
+func TestMockChecksAuthenticationAndReturnsServiceStatus(t *testing.T) {
+	t.Parallel()
+	handler := New(&fakeService{}, fakeAuth{}, slog.New(slog.NewTextHandler(io.Discard, nil)), "http://localhost", "")
+	request := httptest.NewRequest(http.MethodGet, "/api/users/mock/todos/mock", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var body serviceMockResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Service != "todo" || body.Status != "ok" || body.Message == "" || body.Environment != "local" || body.Revision != "development" {
+		t.Fatalf("response = %#v", body)
+	}
+}

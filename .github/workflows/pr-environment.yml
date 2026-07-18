@@ -131,6 +131,7 @@ jobs:
               ProjectName="${RESOURCE_PREFIX}" \
               EnvironmentName="${DEPLOY_ENVIRONMENT}" \
               EnvironmentId="pr-${PR_NUMBER}" \
+              ServiceRevision="${GITHUB_SHA}" \
               DatabaseSchema="pr_${PR_NUMBER}" \
               ApiBasePath="/pr-${PR_NUMBER}" \
               AuthRulePriority="${AUTH_RULE_PRIORITY}" \

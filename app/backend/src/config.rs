@@ -38,6 +38,8 @@ pub struct Config {
     pub auth_issuer: String,
     pub auth_audience: String,
     pub auth_jwks_url: String,
+    pub deploy_environment: String,
+    pub service_revision: String,
 }
 
 impl Config {
@@ -91,6 +93,10 @@ impl Config {
         let auth_issuer = required_env("AUTH_ISSUER");
         let auth_audience = required_env("AUTH_AUDIENCE");
         let auth_jwks_url = required_env("AUTH_JWKS_URL");
+        let deploy_environment =
+            std::env::var("DEPLOY_ENVIRONMENT").unwrap_or_else(|_| "local".into());
+        let service_revision =
+            std::env::var("SERVICE_REVISION").unwrap_or_else(|_| "development".into());
         assert!(
             api_base_path.is_empty()
                 || (api_base_path.starts_with('/') && !api_base_path.ends_with('/')),
@@ -109,6 +115,8 @@ impl Config {
             auth_issuer,
             auth_audience,
             auth_jwks_url,
+            deploy_environment,
+            service_revision,
         }
     }
 }

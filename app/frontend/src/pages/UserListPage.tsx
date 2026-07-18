@@ -3,6 +3,7 @@ import { listUsers } from '../api/users'
 import type { GithubUser } from '../types/user'
 import UserCard from '../components/UserCard'
 import TokenInput from '../components/TokenInput'
+import ServiceVerificationPanel from '../components/ServiceVerificationPanel'
 import './UserListPage.css'
 import { useAuth } from '../auth/AuthContext'
 
@@ -43,6 +44,8 @@ export default function UserListPage() {
         <div><h1>GitHub 账号</h1><p>已归属于当前系统账号的 GitHub 用户</p></div>
         <div className="user-list-page__account"><span>{account?.username}</span><button type="button" onClick={() => void logout()}>退出</button></div>
       </header>
+
+      <ServiceVerificationPanel />
 
       <TokenInput
         onSuccess={() => {

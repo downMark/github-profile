@@ -13,6 +13,9 @@ Parameters:
   EnvironmentId:
     Type: String
     AllowedPattern: '(prod|staging|pr-[0-9]+)'
+  ServiceRevision:
+    Type: String
+    AllowedPattern: '[0-9a-f]{7,40}'
   DatabaseSchema:
     Type: String
     AllowedPattern: '(prod|staging|pr_[0-9]+)'
@@ -309,6 +312,10 @@ Resources:
               Value: !Ref ApiBasePath
             - Name: ALLOWED_ORIGIN
               Value: !Ref FrontendOrigin
+            - Name: DEPLOY_ENVIRONMENT
+              Value: !Ref EnvironmentId
+            - Name: SERVICE_REVISION
+              Value: !Ref ServiceRevision
             - Name: RUST_LOG
               Value: info
             - Name: AUTH_ISSUER
@@ -381,6 +388,10 @@ Resources:
               Value: !Ref ApiBasePath
             - Name: ALLOWED_ORIGIN
               Value: !Ref FrontendOrigin
+            - Name: DEPLOY_ENVIRONMENT
+              Value: !Ref EnvironmentId
+            - Name: SERVICE_REVISION
+              Value: !Ref ServiceRevision
             - Name: PROFILE_GRPC_ADDR
               Value: !Sub 'profile-${EnvironmentId}:50051'
             - Name: AUTH_ISSUER
@@ -451,6 +462,10 @@ Resources:
               Value: !Ref ApiBasePath
             - Name: ALLOWED_ORIGIN
               Value: !Ref FrontendOrigin
+            - Name: DEPLOY_ENVIRONMENT
+              Value: !Ref EnvironmentId
+            - Name: SERVICE_REVISION
+              Value: !Ref ServiceRevision
             - Name: JWT_ISSUER
               Value: !Sub '${ApiOrigin}${ApiBasePath}'
             - Name: JWT_AUDIENCE
