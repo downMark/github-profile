@@ -11,7 +11,7 @@ app/backend/                  Rust + Axum Profile Service（HTTP + gRPC）
 app/todo-service/             Go Todo Service
 app/contracts/                跨服务 protobuf 合约
 app/compose.yaml              PostgreSQL + 三服务本地环境
-infra/pr-environment.yaml     PR、Staging、Production 三服务 CloudFormation 模板
+infra/pr-environment.yaml     PR、Production 三服务 CloudFormation 模板
 buildspec.yml/.codebuild/     CodeBuild Batch 三镜像并行构建
 .github/workflows/            GitHub Actions CI/CD
 ```
@@ -48,4 +48,3 @@ Auth HTTP 默认监听 `3002`，Profile HTTP 监听 `3000`，Profile gRPC 监听
 5. PR 关闭时先删除 PostgreSQL Schema，再删除 Stack 和 PR 镜像。
 
 完整配置见 [DEPLOYMENT_ARCHITECTURE.md](DEPLOYMENT_ARCHITECTURE.md)。
-需要人工完成的 AWS 共享资源和 IAM 变更见 [AWS_CONSOLE_CHANGES.md](AWS_CONSOLE_CHANGES.md)。

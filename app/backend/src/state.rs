@@ -13,15 +13,26 @@ pub struct AppState {
     pub cipher: TokenCipher,
     pub github: GithubClient,
     pub auth: AuthVerifier,
+    pub deploy_environment: String,
+    pub service_revision: String,
 }
 
 impl AppState {
-    pub fn new(db: PgPool, cipher: TokenCipher, github: GithubClient, auth: AuthVerifier) -> Self {
+    pub fn new(
+        db: PgPool,
+        cipher: TokenCipher,
+        github: GithubClient,
+        auth: AuthVerifier,
+        deploy_environment: String,
+        service_revision: String,
+    ) -> Self {
         Self {
             db,
             cipher,
             github,
             auth,
+            deploy_environment,
+            service_revision,
         }
     }
 }

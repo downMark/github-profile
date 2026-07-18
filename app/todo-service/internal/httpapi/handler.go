@@ -31,16 +31,26 @@ type Authenticator interface {
 }
 
 type Handler struct {
-	service       TodoService
-	logger        *slog.Logger
-	allowedOrigin string
-	basePath      string
-	auth          Authenticator
+	service           TodoService
+	logger            *slog.Logger
+	allowedOrigin     string
+	basePath          string
+	auth              Authenticator
+	deployEnvironment string
+	serviceRevision   string
 }
 
 type errorResponse struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+}
+
+type serviceMockResponse struct {
+	Service     string `json:"service"`
+	Status      string `json:"status"`
+	Message     string `json:"message"`
+	Environment string `json:"environment"`
+	Revision    string `json:"revision"`
 }
 
 type createRequest struct {
@@ -55,13 +65,42 @@ type updateRequest struct {
 }
 
 func New(service TodoService, auth Authenticator, logger *slog.Logger, allowedOrigin, basePath string) http.Handler {
-	handler := &Handler{service: service, auth: auth, logger: logger, allowedOrigin: allowedOrigin, basePath: basePath}
+	return NewWithDeployment(service, auth, logger, allowedOrigin, basePath, "local", "development")
+}
+
+func NewWithDeployment(service TodoService, auth Authenticator, logger *slog.Logger, allowedOrigin, basePath, deployEnvironment, serviceRevision string) http.Handler {
+	handler := &Handler{
+		service: service, auth: auth, logger: logger, allowedOrigin: allowedOrigin, basePath: basePath,
+		deployEnvironment: deployEnvironment, serviceRevision: serviceRevision,
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc(basePath+"/health", handler.health)
 	mux.HandleFunc(basePath+"/health/todo", handler.health)
+	mux.HandleFunc(basePath+"/api/users/mock/todos/mock", handler.mock)
 	mux.HandleFunc(basePath+"/api/users/{user_id}/todos", handler.collection)
 	mux.HandleFunc(basePath+"/api/users/{user_id}/todos/{todo_id}", handler.item)
 	return handler.cors(handler.recoverPanic(mux))
+}
+
+func (h *Handler) mock(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		h.methodNotAllowed(w)
+		return
+	}
+	if _, ok := h.authenticate(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, serviceMockResponse{
+		Service:     "todo",
+		Status:      "ok",
+		Message:     "Todo 服务链路正常",
+		Environment: h.deployEnvironment,
+		Revision:    h.serviceRevision,
+	})
 }
 
 func (h *Handler) health(w http.ResponseWriter, r *http.Request) {

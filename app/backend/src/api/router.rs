@@ -27,6 +27,7 @@ pub fn build(
             "/api/users",
             post(users::import_user).get(users::list_users),
         )
+        .route("/api/users/mock", get(users::mock))
         .route("/api/users/{id}", get(users::get_user))
         .route("/api/users/{id}/refresh", post(users::refresh_user))
         .fallback(fallback);

@@ -1,8 +1,8 @@
-name: Deploy Long-lived Environment
+name: Deploy Production
 
 on:
   push:
-    branches: [main, stg]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -15,10 +15,10 @@ concurrency:
 
 jobs:
   deploy:
-    name: Deploy ${{ github.ref_name == 'main' && 'production' || 'staging' }}
-    if: github.ref_name == 'main' || github.ref_name == 'stg'
+    name: Deploy production
+    if: github.ref_name == 'main'
     runs-on: ubuntu-latest
-    environment: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
+    environment: production
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
@@ -41,32 +41,19 @@ jobs:
         with:
           parameter-name: ${{ env.SHARED_CONFIG_PARAMETER }}
 
-      - name: Select environment
+      - name: Set production environment
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
-            {
-              echo "ENVIRONMENT_ID=prod"
-              echo "DATABASE_SCHEMA=prod"
-              echo "API_BASE_PATH="
-              echo "FRONTEND_ORIGIN=${PRODUCTION_FRONTEND_ORIGIN}"
-              echo "AUTH_RULE_PRIORITY=100"
-              echo "TODO_RULE_PRIORITY=101"
-              echo "PROFILE_RULE_PRIORITY=102"
-              echo "CLOUDFLARE_BRANCH=main"
-            } >> "${GITHUB_ENV}"
-          else
-            {
-              echo "ENVIRONMENT_ID=staging"
-              echo "DATABASE_SCHEMA=staging"
-              echo "API_BASE_PATH=/staging"
-              echo "FRONTEND_ORIGIN=${STAGING_FRONTEND_ORIGIN}"
-              echo "AUTH_RULE_PRIORITY=110"
-              echo "TODO_RULE_PRIORITY=111"
-              echo "PROFILE_RULE_PRIORITY=112"
-              echo "CLOUDFLARE_BRANCH=stg"
-            } >> "${GITHUB_ENV}"
-          fi
+          {
+            echo "ENVIRONMENT_ID=prod"
+            echo "DATABASE_SCHEMA=prod"
+            echo "API_BASE_PATH="
+            echo "FRONTEND_ORIGIN=${PRODUCTION_FRONTEND_ORIGIN}"
+            echo "AUTH_RULE_PRIORITY=100"
+            echo "TODO_RULE_PRIORITY=101"
+            echo "PROFILE_RULE_PRIORITY=102"
+            echo "CLOUDFLARE_BRANCH=main"
+          } >> "${GITHUB_ENV}"
 
       - name: Test and build service images in CodeBuild
         id: codebuild
@@ -92,6 +79,7 @@ jobs:
               ProjectName="${RESOURCE_PREFIX}" \
               EnvironmentName="${ENVIRONMENT_ID}" \
               EnvironmentId="${ENVIRONMENT_ID}" \
+              ServiceRevision="${GITHUB_SHA}" \
               DatabaseSchema="${DATABASE_SCHEMA}" \
               ApiBasePath="${API_BASE_PATH}" \
               AuthRulePriority="${AUTH_RULE_PRIORITY}" \

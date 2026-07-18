@@ -12,13 +12,16 @@ Parameters:
     AllowedPattern: '[a-z0-9-]+'
   EnvironmentId:
     Type: String
-    AllowedPattern: '(prod|staging|pr-[0-9]+)'
+    AllowedPattern: '(prod|pr-[0-9]+)'
+  ServiceRevision:
+    Type: String
+    AllowedPattern: '[0-9a-f]{7,40}'
   DatabaseSchema:
     Type: String
-    AllowedPattern: '(prod|staging|pr_[0-9]+)'
+    AllowedPattern: '(prod|pr_[0-9]+)'
   ApiBasePath:
     Type: String
-    AllowedPattern: '(/(prod|staging|pr-[0-9]+))?'
+    AllowedPattern: '(/(prod|pr-[0-9]+))?'
   AuthRulePriority:
     Type: Number
     MinValue: 1
@@ -309,6 +312,10 @@ Resources:
               Value: !Ref ApiBasePath
             - Name: ALLOWED_ORIGIN
               Value: !Ref FrontendOrigin
+            - Name: DEPLOY_ENVIRONMENT
+              Value: !Ref EnvironmentId
+            - Name: SERVICE_REVISION
+              Value: !Ref ServiceRevision
             - Name: RUST_LOG
               Value: info
             - Name: AUTH_ISSUER
@@ -316,7 +323,7 @@ Resources:
             - Name: AUTH_AUDIENCE
               Value: github-profile
             - Name: AUTH_JWKS_URL
-              Value: !Sub 'http://auth-${EnvironmentId}:3000${ApiBasePath}/.well-known/jwks.json'
+              Value: !Sub '${ApiOrigin}${ApiBasePath}/.well-known/jwks.json'
           Secrets:
             - Name: DB_USERNAME
               ValueFrom: !Sub '${RdsSecretArn}:username::'
@@ -381,6 +388,10 @@ Resources:
               Value: !Ref ApiBasePath
             - Name: ALLOWED_ORIGIN
               Value: !Ref FrontendOrigin
+            - Name: DEPLOY_ENVIRONMENT
+              Value: !Ref EnvironmentId
+            - Name: SERVICE_REVISION
+              Value: !Ref ServiceRevision
             - Name: PROFILE_GRPC_ADDR
               Value: !Sub 'profile-${EnvironmentId}:50051'
             - Name: AUTH_ISSUER
@@ -388,7 +399,7 @@ Resources:
             - Name: AUTH_AUDIENCE
               Value: github-profile
             - Name: AUTH_JWKS_URL
-              Value: !Sub 'http://auth-${EnvironmentId}:3000${ApiBasePath}/.well-known/jwks.json'
+              Value: !Sub '${ApiOrigin}${ApiBasePath}/.well-known/jwks.json'
           Secrets:
             - Name: DB_USERNAME
               ValueFrom: !Sub '${RdsSecretArn}:username::'
@@ -451,6 +462,10 @@ Resources:
               Value: !Ref ApiBasePath
             - Name: ALLOWED_ORIGIN
               Value: !Ref FrontendOrigin
+            - Name: DEPLOY_ENVIRONMENT
+              Value: !Ref EnvironmentId
+            - Name: SERVICE_REVISION
+              Value: !Ref ServiceRevision
             - Name: JWT_ISSUER
               Value: !Sub '${ApiOrigin}${ApiBasePath}'
             - Name: JWT_AUDIENCE
@@ -580,8 +595,11 @@ Resources:
 
   TodoService:
     Type: AWS::ECS::Service
+    # 依赖 ProfileService：Service Connect 客户端只在任务启动时装载已存在的上游别名，
+    # 并行创建会导致 todo 解析不到 profile-<env> 的 gRPC 地址
     DependsOn:
       - TodoListenerRule
+      - ProfileService
     Properties:
       ServiceName: !Sub '${ProjectName}-todo-${EnvironmentId}'
       Cluster: !Ref EcsCluster

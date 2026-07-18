@@ -41,7 +41,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         &config.auth_audience,
         &config.auth_jwks_url,
     );
-    let state = AppState::new(pool, cipher, GithubClient::new(), auth);
+    let state = AppState::new(
+        pool,
+        cipher,
+        GithubClient::new(),
+        auth,
+        config.deploy_environment.clone(),
+        config.service_revision.clone(),
+    );
     let app = api::router::build(state.clone(), &config.allowed_origin, &config.api_base_path)?;
 
     // 在 Lambda 运行时中由 API Gateway 事件驱动；本地开发直接起 HTTP 服务

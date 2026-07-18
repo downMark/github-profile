@@ -18,6 +18,8 @@ pub struct Config {
     pub cookie_path: String,
     pub api_base_path: String,
     pub kms_signing_key_id: Option<String>,
+    pub deploy_environment: String,
+    pub service_revision: String,
 }
 
 impl Config {
@@ -83,6 +85,8 @@ impl Config {
             cookie_path: value("COOKIE_PATH", &format!("{api_base_path}/api/auth")),
             api_base_path,
             kms_signing_key_id: env::var("KMS_SIGNING_KEY_ID").ok(),
+            deploy_environment: value("DEPLOY_ENVIRONMENT", "local"),
+            service_revision: value("SERVICE_REVISION", "development"),
         })
     }
 }

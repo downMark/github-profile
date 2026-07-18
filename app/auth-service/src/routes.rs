@@ -39,6 +39,15 @@ struct AuthResponse {
     account: Account,
 }
 
+#[derive(Serialize)]
+struct ServiceMockResponse {
+    service: &'static str,
+    status: &'static str,
+    message: &'static str,
+    environment: String,
+    revision: String,
+}
+
 pub fn router(state: AppState) -> Result<Router, AppError> {
     let origin = HeaderValue::from_str(&state.config.allowed_origin)
         .map_err(|_| AppError::Config("invalid ALLOWED_ORIGIN".into()))?;
@@ -57,7 +66,8 @@ pub fn router(state: AppState) -> Result<Router, AppError> {
         .route("/api/auth/login", post(login))
         .route("/api/auth/refresh", post(refresh))
         .route("/api/auth/logout", post(logout))
-        .route("/api/auth/me", get(me));
+        .route("/api/auth/me", get(me))
+        .route("/api/auth/mock", get(mock));
     let app = if state.config.api_base_path.is_empty() {
         routes
     } else {
@@ -137,6 +147,20 @@ async fn me(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Ac
             .await?
             .ok_or(AppError::Unauthorized)?,
     ))
+}
+
+async fn mock(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<ServiceMockResponse>, AppError> {
+    authenticated_account(&state.jwt, &headers)?;
+    Ok(Json(ServiceMockResponse {
+        service: "auth",
+        status: "ok",
+        message: "账号认证链路正常",
+        environment: state.config.deploy_environment.clone(),
+        revision: state.config.service_revision.clone(),
+    }))
 }
 
 async fn jwks(State(state): State<AppState>) -> Json<serde_json::Value> {
