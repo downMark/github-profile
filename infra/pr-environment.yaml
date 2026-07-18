@@ -12,16 +12,16 @@ Parameters:
     AllowedPattern: '[a-z0-9-]+'
   EnvironmentId:
     Type: String
-    AllowedPattern: '(prod|staging|pr-[0-9]+)'
+    AllowedPattern: '(prod|pr-[0-9]+)'
   ServiceRevision:
     Type: String
     AllowedPattern: '[0-9a-f]{7,40}'
   DatabaseSchema:
     Type: String
-    AllowedPattern: '(prod|staging|pr_[0-9]+)'
+    AllowedPattern: '(prod|pr_[0-9]+)'
   ApiBasePath:
     Type: String
-    AllowedPattern: '(/(prod|staging|pr-[0-9]+))?'
+    AllowedPattern: '(/(prod|pr-[0-9]+))?'
   AuthRulePriority:
     Type: Number
     MinValue: 1

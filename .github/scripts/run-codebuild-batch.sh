@@ -9,7 +9,7 @@ for name in "${required[@]}"; do
   fi
 done
 
-if [[ ! "${ENVIRONMENT_ID}" =~ ^(prod|staging|pr-[0-9]+)$ || ! "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+if [[ ! "${ENVIRONMENT_ID}" =~ ^(prod|pr-[0-9]+)$ || ! "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
   echo "ENVIRONMENT_ID or HEAD_SHA has an invalid format" >&2
   exit 1
 fi
