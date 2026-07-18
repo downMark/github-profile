@@ -1,0 +1,52 @@
+name: Load deployment configuration
+description: Load shared non-secret deployment configuration from one SSM Parameter.
+
+inputs:
+  parameter-name:
+    description: SSM Parameter name containing the deployment configuration JSON.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Export deployment configuration
+      shell: bash
+      env:
+        PARAMETER_NAME: ${{ inputs.parameter-name }}
+      run: |
+        set -euo pipefail
+        CONFIG="$(aws ssm get-parameter \
+          --name "${PARAMETER_NAME}" \
+          --query Parameter.Value \
+          --output text)"
+
+        required=(
+          CLOUDFORMATION_ROLE_ARN CODEBUILD_PROJECT AUTH_ECR_REPOSITORY PROFILE_ECR_REPOSITORY TODO_ECR_REPOSITORY ECS_CLUSTER VPC_ID
+          PRIVATE_SUBNETS ECS_SECURITY_GROUP ALB_LISTENER_ARN API_ORIGIN
+          CLOUD_MAP_NAMESPACE_ARN ECS_TASK_EXECUTION_ROLE_ARN AUTH_TASK_ROLE_ARN ECS_TASK_ROLE_ARN
+          RDS_SECRET_ARN TOKEN_ENCRYPTION_SECRET_ARN DB_HOST RESOURCE_PREFIX
+          DEPLOY_ENVIRONMENT CLOUDFLARE_PROJECT_NAME CLOUDFLARE_ACCOUNT_ID
+          PRODUCTION_FRONTEND_ORIGIN STAGING_FRONTEND_ORIGIN
+        )
+
+        for name in "${required[@]}"; do
+          value="$(jq -er --arg name "${name}" '.[$name] | select(type == "string" and length > 0)' <<< "${CONFIG}")" || {
+            echo "SSM deployment config is missing a non-empty string: ${name}" >&2
+            exit 1
+          }
+          if [[ "${value}" == *$'\n'* || "${value}" == *$'\r'* ]]; then
+            echo "SSM deployment config value contains a newline: ${name}" >&2
+            exit 1
+          fi
+          echo "${name}=${value}" >> "${GITHUB_ENV}"
+        done
+
+        database_name="$(jq -er '(.DB_NAME // "postgres") | select(type == "string" and length > 0)' <<< "${CONFIG}")" || {
+          echo "SSM deployment config DB_NAME must be a non-empty string when provided" >&2
+          exit 1
+        }
+        if [[ "${database_name}" == *$'\n'* || "${database_name}" == *$'\r'* ]]; then
+          echo "SSM deployment config DB_NAME contains a newline" >&2
+          exit 1
+        fi
+        echo "DB_NAME=${database_name}" >> "${GITHUB_ENV}"

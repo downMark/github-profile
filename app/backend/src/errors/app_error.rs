@@ -16,4 +16,10 @@ pub enum AppError {
 
     #[error("not found")]
     NotFound,
+
+    #[error("unauthorized")]
+    Unauthorized,
+
+    #[error("authentication service unavailable")]
+    AuthUnavailable,
 }

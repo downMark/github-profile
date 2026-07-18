@@ -18,9 +18,10 @@ use crate::state::AppState;
 pub fn build(
     state: AppState,
     allowed_origin: &str,
+    api_base_path: &str,
 ) -> Result<Router, axum::http::header::InvalidHeaderValue> {
     let origin = HeaderValue::from_str(allowed_origin)?;
-    Ok(Router::new()
+    let routes = Router::new()
         .route("/health", get(health))
         .route(
             "/api/users",
@@ -28,12 +29,23 @@ pub fn build(
         )
         .route("/api/users/{id}", get(users::get_user))
         .route("/api/users/{id}/refresh", post(users::refresh_user))
-        .fallback(fallback)
+        .fallback(fallback);
+    let app = if api_base_path.is_empty() {
+        routes
+    } else {
+        Router::new().nest(api_base_path, routes)
+    };
+
+    Ok(app
         .layer(
             CorsLayer::new()
                 .allow_origin(origin)
                 .allow_methods([Method::GET, Method::POST])
-                .allow_headers([axum::http::header::CONTENT_TYPE]),
+                .allow_headers([
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::header::AUTHORIZATION,
+                ])
+                .allow_credentials(true),
         )
         .layer(TraceLayer::new_for_http())
         .with_state(state))

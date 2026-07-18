@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package profile.v1;
+
+option go_package = "github.com/downMark/github-profile/app/todo-service/internal/gen/profile/v1;profilev1";
+
+service ProfileService {
+  rpc AuthorizeGithubUser(AuthorizeGithubUserRequest) returns (AuthorizeGithubUserResponse);
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+}
+
+message AuthorizeGithubUserRequest {
+  string user_id = 1;
+}
+
+message AuthorizeGithubUserResponse {
+  UserSummary user = 1;
+}
+
+message GetUserRequest {
+  string user_id = 1;
+}
+
+message GetUserResponse {
+  UserSummary user = 1;
+}
+
+message UserSummary {
+  string id = 1;
+  int64 github_id = 2;
+  string login = 3;
+}

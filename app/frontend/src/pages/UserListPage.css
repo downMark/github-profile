@@ -7,6 +7,11 @@
 
 .user-list-page__header {
   margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  text-align: left;
 }
 
 .user-list-page__header h1 {
@@ -75,4 +80,18 @@
   align-items: center;
   justify-content: center;
   gap: 16px;
+}
+.user-list-page__account {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.user-list-page__account button {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 8px 12px;
+  background: transparent;
+  color: var(--text-h);
+  cursor: pointer;
 }

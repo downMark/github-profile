@@ -1,41 +1,11 @@
 version: 0.2
 
-env:
-  shell: bash
-  variables:
-    AWS_REGION: ap-northeast-1
-    ECR_REPOSITORY: github-profile-dev-backend
+batch:
+  build-list:
+    - identifier: auth
+      buildspec: .codebuild/auth.yml
+    - identifier: profile
+      buildspec: .codebuild/profile.yml
+    - identifier: todo
+      buildspec: .codebuild/todo.yml
 
-phases:
-  pre_build:
-    commands:
-      - set -euo pipefail
-      - ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
-      - ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-      - SHORT_SHA="${GIT_SHA:0:12}"
-      - IMAGE_TAG="${IMAGE_TAG:-pr-${PR_NUMBER}-${SHORT_SHA}}"
-      - IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
-      - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
-  build:
-    commands:
-      - |
-        if [[ "${DEPLOY_MODE:-deploy}" == "cleanup" ]]; then
-          echo "Cleanup mode selected; skipping Docker build."
-          exit 0
-        fi
-      - docker build --pull -t "${IMAGE_URI}" app/backend
-  post_build:
-    commands:
-      - |
-        if [[ "${DEPLOY_MODE:-deploy}" == "cleanup" ]]; then
-          echo "Cleanup mode complete placeholder for PR ${PR_NUMBER}."
-          printf '{"deployMode":"cleanup","prNumber":"%s"}\n' "${PR_NUMBER}" > image-detail.json
-          exit 0
-        fi
-      - docker push "${IMAGE_URI}"
-      - printf '{"imageUri":"%s","imageTag":"%s","prNumber":"%s"}\n' "${IMAGE_URI}" "${IMAGE_TAG}" "${PR_NUMBER}" > image-detail.json
-
-artifacts:
-  files:
-    - image-detail.json
-  discard-paths: yes

@@ -1,0 +1,16 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - test -n "${PROFILE_ECR_REPOSITORY}" && test -n "${IMAGE_TAG}"
+      - REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+      - IMAGE_URI="${REGISTRY}/${PROFILE_ECR_REPOSITORY}:${IMAGE_TAG}"
+      - CACHE_URI="${REGISTRY}/${PROFILE_ECR_REPOSITORY}:buildcache"
+      - aws ecr get-login-password | docker login --username AWS --password-stdin "${REGISTRY}"
+      # buildkit 驱动镜像来自 Docker Hub，先用 daemon 带重试拉到本地，规避匿名限流
+      - 'for i in 1 2 3 4 5; do docker pull moby/buildkit:buildx-stable-1 && break; if [ "$i" = "5" ]; then exit 1; fi; sleep $((i*15)); done'
+      - docker buildx create --use --name ci-builder --driver docker-container
+  build:
+    commands:
+      - docker buildx build --push --provenance=false --progress plain --file app/backend/Dockerfile --tag "${IMAGE_URI}" --cache-from "type=registry,ref=${CACHE_URI}" --cache-to "type=registry,ref=${CACHE_URI},mode=max,image-manifest=true,oci-mediatypes=true" app

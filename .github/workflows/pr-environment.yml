@@ -9,73 +9,350 @@ permissions:
   contents: read
   pull-requests: write
 
-env:
-  AWS_REGION: ap-northeast-1
-  AWS_ROLE_ARN: arn:aws:iam::688674375825:role/github-profile-github-actions-oidc-role
-  CODEBUILD_PROJECT: github-profile-dev-pr-builder
+concurrency:
+  group: pr-environment-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
-  codebuild:
-    name: Start CodeBuild
-    if: github.event.pull_request.head.repo.full_name == github.repository
+  guard:
+    name: Check PR guard
+    uses: ./.github/workflows/pr-guard.yml
+    with:
+      head-ref: ${{ github.event.pull_request.head.ref }}
+      head-repository: ${{ github.event.pull_request.head.repo.full_name }}
+      repository: ${{ github.repository }}
+
+  build-services:
+    name: Test and build services in CodeBuild
+    needs: guard
+    if: needs.guard.outputs.allowed == 'true' && github.event.action != 'closed'
     runs-on: ubuntu-latest
+    environment: dev
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      SHARED_CONFIG_PARAMETER: ${{ vars.SHARED_CONFIG_PARAMETER }}
+    outputs:
+      auth-image-uri: ${{ steps.codebuild.outputs.auth-image-uri }}
+      profile-image-uri: ${{ steps.codebuild.outputs.profile-image-uri }}
+      todo-image-uri: ${{ steps.codebuild.outputs.todo-image-uri }}
     steps:
+      - name: Check out PR commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Validate bootstrap configuration
+        run: .github/scripts/validate-bootstrap.sh
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Start PR environment build
-        id: start
+      - name: Load shared deployment configuration
+        uses: ./.github/actions/load-deployment-config
+        with:
+          parameter-name: ${{ env.SHARED_CONFIG_PARAMETER }}
+
+      - name: Start and wait for CodeBuild batch
+        id: codebuild
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ENVIRONMENT_ID: pr-${{ github.event.pull_request.number }}
+        run: .github/scripts/run-codebuild-batch.sh
+
+  deploy-services:
+    name: Deploy Auth, Profile and Todo services
+    needs: [guard, build-services]
+    if: needs.guard.outputs.allowed == 'true' && github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      SHARED_CONFIG_PARAMETER: ${{ vars.SHARED_CONFIG_PARAMETER }}
+    outputs:
+      api-base-url: ${{ steps.stack.outputs.api-base-url }}
+      auth-health-url: ${{ steps.stack.outputs.auth-health-url }}
+      profile-health-url: ${{ steps.stack.outputs.profile-health-url }}
+      todo-health-url: ${{ steps.stack.outputs.todo-health-url }}
+    steps:
+      - name: Check out PR commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Validate bootstrap configuration
+        run: .github/scripts/validate-bootstrap.sh
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Load shared deployment configuration
+        uses: ./.github/actions/load-deployment-config
+        with:
+          parameter-name: ${{ env.SHARED_CONFIG_PARAMETER }}
+
+      - name: Deploy PR CloudFormation stack
+        env:
+          AUTH_IMAGE_URI: ${{ needs.build-services.outputs.auth-image-uri }}
+          PROFILE_IMAGE_URI: ${{ needs.build-services.outputs.profile-image-uri }}
+          TODO_IMAGE_URI: ${{ needs.build-services.outputs.todo-image-uri }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PREVIEW_BRANCH: ${{ needs.guard.outputs.preview_branch }}
         run: |
           set -euo pipefail
-
-          if [[ "${{ github.event.action }}" == "closed" ]]; then
-            DEPLOY_MODE="cleanup"
-          else
-            DEPLOY_MODE="deploy"
+          STACK_NAME="${RESOURCE_PREFIX}-pr-${PR_NUMBER}"
+          AUTH_RULE_PRIORITY="$((1000 + PR_NUMBER * 3))"
+          TODO_RULE_PRIORITY="$((AUTH_RULE_PRIORITY + 1))"
+          PROFILE_RULE_PRIORITY="$((AUTH_RULE_PRIORITY + 2))"
+          if (( PROFILE_RULE_PRIORITY > 50000 )); then
+            echo "PR number cannot be mapped to valid ALB listener rule priorities" >&2
+            exit 1
           fi
+          FRONTEND_ORIGIN="https://${PREVIEW_BRANCH}.${CLOUDFLARE_PROJECT_NAME}.pages.dev"
+          DATABASE_NAME="${DB_NAME:-postgres}"
 
-          SHORT_SHA="${GITHUB_SHA::12}"
-          IMAGE_TAG="pr-${{ github.event.pull_request.number }}-${SHORT_SHA}"
+          aws cloudformation deploy \
+            --stack-name "${STACK_NAME}" \
+            --template-file infra/pr-environment.yaml \
+            --role-arn "${CLOUDFORMATION_ROLE_ARN}" \
+            --no-fail-on-empty-changeset \
+            --tags \
+              Project="${RESOURCE_PREFIX}" \
+              Environment="${DEPLOY_ENVIRONMENT}" \
+              PullRequest="${PR_NUMBER}" \
+            --parameter-overrides \
+              ProjectName="${RESOURCE_PREFIX}" \
+              EnvironmentName="${DEPLOY_ENVIRONMENT}" \
+              EnvironmentId="pr-${PR_NUMBER}" \
+              DatabaseSchema="pr_${PR_NUMBER}" \
+              ApiBasePath="/pr-${PR_NUMBER}" \
+              AuthRulePriority="${AUTH_RULE_PRIORITY}" \
+              TodoRulePriority="${TODO_RULE_PRIORITY}" \
+              ProfileRulePriority="${PROFILE_RULE_PRIORITY}" \
+              AuthImageUri="${AUTH_IMAGE_URI}" \
+              ProfileImageUri="${PROFILE_IMAGE_URI}" \
+              TodoImageUri="${TODO_IMAGE_URI}" \
+              EcsCluster="${ECS_CLUSTER}" \
+              VpcId="${VPC_ID}" \
+              PrivateSubnetIds="${PRIVATE_SUBNETS}" \
+              EcsSecurityGroupId="${ECS_SECURITY_GROUP}" \
+              AlbListenerArn="${ALB_LISTENER_ARN}" \
+              ApiOrigin="${API_ORIGIN}" \
+              FrontendOrigin="${FRONTEND_ORIGIN}" \
+              CloudMapNamespaceArn="${CLOUD_MAP_NAMESPACE_ARN}" \
+              EcsTaskExecutionRoleArn="${ECS_TASK_EXECUTION_ROLE_ARN}" \
+              AuthTaskRoleArn="${AUTH_TASK_ROLE_ARN}" \
+              EcsTaskRoleArn="${ECS_TASK_ROLE_ARN}" \
+              RdsSecretArn="${RDS_SECRET_ARN}" \
+              TokenEncryptionSecretArn="${TOKEN_ENCRYPTION_SECRET_ARN}" \
+              DatabaseHost="${DB_HOST}" \
+              DatabaseName="${DATABASE_NAME}"
 
-          BUILD_ID="$(aws codebuild start-build \
-            --project-name "${CODEBUILD_PROJECT}" \
-            --source-version "${GITHUB_SHA}" \
-            --environment-variables-override \
-              name=PR_NUMBER,value=${{ github.event.pull_request.number }},type=PLAINTEXT \
-              name=GIT_SHA,value=${GITHUB_SHA},type=PLAINTEXT \
-              name=DEPLOY_MODE,value=${DEPLOY_MODE},type=PLAINTEXT \
-              name=IMAGE_TAG,value=${IMAGE_TAG},type=PLAINTEXT \
-            --query 'build.id' \
-            --output text)"
-
-          echo "build_id=${BUILD_ID}" >> "${GITHUB_OUTPUT}"
-          echo "Started CodeBuild ${BUILD_ID}"
-
-      - name: Wait for CodeBuild
+      - name: Read and verify stack outputs
+        id: stack
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
+          STACK_NAME="${RESOURCE_PREFIX}-pr-${PR_NUMBER}"
+          API_BASE_URL="$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='ApiBaseUrl'].OutputValue" --output text)"
+          PROFILE_HEALTH_URL="$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='ProfileHealthUrl'].OutputValue" --output text)"
+          TODO_HEALTH_URL="$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='TodoHealthUrl'].OutputValue" --output text)"
+          AUTH_HEALTH_URL="$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --query "Stacks[0].Outputs[?OutputKey=='AuthHealthUrl'].OutputValue" --output text)"
+          echo "api-base-url=${API_BASE_URL}" >> "${GITHUB_OUTPUT}"
+          echo "profile-health-url=${PROFILE_HEALTH_URL}" >> "${GITHUB_OUTPUT}"
+          echo "todo-health-url=${TODO_HEALTH_URL}" >> "${GITHUB_OUTPUT}"
+          echo "auth-health-url=${AUTH_HEALTH_URL}" >> "${GITHUB_OUTPUT}"
+          curl --fail --silent --show-error --retry 10 --retry-delay 6 "${AUTH_HEALTH_URL}"
+          curl --fail --silent --show-error --retry 10 --retry-delay 6 "${PROFILE_HEALTH_URL}"
+          curl --fail --silent --show-error --retry 10 --retry-delay 6 "${TODO_HEALTH_URL}"
 
-          BUILD_ID="${{ steps.start.outputs.build_id }}"
-          while true; do
-            STATUS="$(aws codebuild batch-get-builds \
-              --ids "${BUILD_ID}" \
-              --query 'builds[0].buildStatus' \
-              --output text)"
+      - name: Publish service summary
+        env:
+          AUTH_IMAGE_URI: ${{ needs.build-services.outputs.auth-image-uri }}
+          PROFILE_IMAGE_URI: ${{ needs.build-services.outputs.profile-image-uri }}
+          TODO_IMAGE_URI: ${{ needs.build-services.outputs.todo-image-uri }}
+        run: |
+          {
+            echo "### PR services"
+            echo
+            echo "- Auth image: \`${AUTH_IMAGE_URI}\`"
+            echo "- Profile image: \`${PROFILE_IMAGE_URI}\`"
+            echo "- Todo image: \`${TODO_IMAGE_URI}\`"
+            echo "- API base URL: ${{ steps.stack.outputs.api-base-url }}"
+            echo "- Profile health: ${{ steps.stack.outputs.profile-health-url }}"
+            echo "- Todo health: ${{ steps.stack.outputs.todo-health-url }}"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
-            echo "CodeBuild status: ${STATUS}"
+  deploy-frontend:
+    name: Deploy Cloudflare Pages preview
+    needs: guard
+    if: needs.guard.outputs.allowed == 'true' && github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      SHARED_CONFIG_PARAMETER: ${{ vars.SHARED_CONFIG_PARAMETER }}
+    outputs:
+      api-base-url: ${{ steps.urls.outputs.api-base-url }}
+      preview-url: ${{ steps.urls.outputs.preview-url }}
+    steps:
+      - name: Check out PR commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
-            case "${STATUS}" in
-              SUCCEEDED)
-                exit 0
-                ;;
-              FAILED|FAULT|STOPPED|TIMED_OUT)
-                exit 1
-                ;;
-              *)
-                sleep 15
-                ;;
-            esac
-          done
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Load shared deployment configuration
+        uses: ./.github/actions/load-deployment-config
+        with:
+          parameter-name: ${{ env.SHARED_CONFIG_PARAMETER }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: app/frontend/package-lock.json
+
+      - name: Prepare preview URLs
+        id: urls
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PREVIEW_BRANCH: ${{ needs.guard.outputs.preview_branch }}
+        run: |
+          set -euo pipefail
+          API_BASE_URL="${API_ORIGIN%/}/pr-${PR_NUMBER}/api"
+          PREVIEW_URL="https://${PREVIEW_BRANCH}.${CLOUDFLARE_PROJECT_NAME}.pages.dev"
+          echo "api-base-url=${API_BASE_URL}" >> "${GITHUB_OUTPUT}"
+          echo "preview-url=${PREVIEW_URL}" >> "${GITHUB_OUTPUT}"
+
+      - name: Lint and build frontend
+        working-directory: app/frontend
+        env:
+          VITE_API_BASE_URL: ${{ steps.urls.outputs.api-base-url }}
+        run: |
+          npm ci
+          npm run lint
+          npm run build
+
+      - name: Deploy Pages preview
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: app/frontend
+          command: pages deploy dist --project-name=${{ env.CLOUDFLARE_PROJECT_NAME }} --branch=${{ needs.guard.outputs.preview_branch }}
+
+      - name: Publish frontend summary
+        run: |
+          {
+            echo "### PR frontend"
+            echo
+            echo "- Frontend: ${{ steps.urls.outputs.preview-url }}"
+            echo "- API configured at build time: ${{ steps.urls.outputs.api-base-url }}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  publish-environment:
+    name: Publish PR environment URLs
+    needs: [guard, deploy-services, deploy-frontend]
+    if: >-
+      always() &&
+      needs.guard.outputs.allowed == 'true' &&
+      github.event.action != 'closed' &&
+      needs.deploy-services.result == 'success' &&
+      needs.deploy-frontend.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Comment PR environment URLs
+        uses: actions/github-script@v7
+        env:
+          API_BASE_URL: ${{ needs.deploy-services.outputs.api-base-url }}
+          PROFILE_HEALTH_URL: ${{ needs.deploy-services.outputs.profile-health-url }}
+          TODO_HEALTH_URL: ${{ needs.deploy-services.outputs.todo-health-url }}
+          AUTH_HEALTH_URL: ${{ needs.deploy-services.outputs.auth-health-url }}
+          PREVIEW_URL: ${{ needs.deploy-frontend.outputs.preview-url }}
+        with:
+          script: |
+            const marker = '<!-- github-profile-pr-environment -->';
+            const body = [
+              marker,
+              '### PR environment',
+              '',
+              `- Frontend: ${process.env.PREVIEW_URL}`,
+              `- API: ${process.env.API_BASE_URL}`,
+              `- Auth health: ${process.env.AUTH_HEALTH_URL}`,
+              `- Profile health: ${process.env.PROFILE_HEALTH_URL}`,
+              `- Todo health: ${process.env.TODO_HEALTH_URL}`,
+            ].join('\n');
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
+            const existing = comments.find(comment => comment.user?.type === 'Bot' && comment.body?.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+  cleanup:
+    name: Clean up PR environment
+    needs: guard
+    if: needs.guard.outputs.allowed == 'true' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      SHARED_CONFIG_PARAMETER: ${{ vars.SHARED_CONFIG_PARAMETER }}
+    steps:
+      - name: Check out PR cleanup definition
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Load shared deployment configuration
+        uses: ./.github/actions/load-deployment-config
+        with:
+          parameter-name: ${{ env.SHARED_CONFIG_PARAMETER }}
+
+      - name: Drop schema and delete PR stack
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: .github/scripts/cleanup-pr-environment.sh
+
+      - name: Record Pages cleanup limitation
+        env:
+          PREVIEW_BRANCH: ${{ needs.guard.outputs.preview_branch }}
+        run: |
+          {
+            echo "### Cloudflare Pages cleanup"
+            echo
+            echo "The latest deployment for branch \`${PREVIEW_BRANCH}\` cannot be deleted by Pages."
+            echo "Older deployments can be removed by the configured retention process."
+          } >> "${GITHUB_STEP_SUMMARY}"
