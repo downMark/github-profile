@@ -19,6 +19,9 @@ on:
       allowed:
         description: Whether this pull request may use the PR environment workflow
         value: ${{ jobs.validate.outputs.allowed }}
+      preview_branch:
+        description: Cloudflare-compatible preview branch derived from the pull request source branch
+        value: ${{ jobs.validate.outputs.preview_branch }}
 
 jobs:
   validate:
@@ -26,6 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       allowed: ${{ steps.guard.outputs.allowed }}
+      preview_branch: ${{ steps.guard.outputs.preview_branch }}
     steps:
       - name: Check repository and branch name
         id: guard
@@ -37,6 +41,7 @@ jobs:
           set -euo pipefail
 
           ALLOWED=false
+          PREVIEW_BRANCH=""
           REASON=""
 
           if [[ "${HEAD_REPOSITORY}" != "${REPOSITORY}" ]]; then
@@ -44,17 +49,22 @@ jobs:
           elif [[ ! "${HEAD_REF}" =~ ^jira-[[:alnum:]] ]]; then
             REASON="The source branch must start with jira- followed by a letter or number."
           else
+            PREVIEW_BRANCH="$(printf '%s' "${HEAD_REF}" \
+              | tr '[:upper:]' '[:lower:]' \
+              | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
             ALLOWED=true
             REASON="PR environment operations are allowed."
           fi
 
           echo "allowed=${ALLOWED}" >> "${GITHUB_OUTPUT}"
+          echo "preview_branch=${PREVIEW_BRANCH}" >> "${GITHUB_OUTPUT}"
           echo "${REASON}"
 
           {
             echo "### PR guard"
             echo
             echo "- Source branch: \`${HEAD_REF}\`"
+            echo "- Preview branch: \`${PREVIEW_BRANCH:-not-created}\`"
             echo "- Allowed: \`${ALLOWED}\`"
             echo "- Reason: ${REASON}"
           } >> "${GITHUB_STEP_SUMMARY}"

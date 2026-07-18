@@ -104,6 +104,7 @@ jobs:
           PROFILE_IMAGE_URI: ${{ needs.build-services.outputs.profile-image-uri }}
           TODO_IMAGE_URI: ${{ needs.build-services.outputs.todo-image-uri }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          PREVIEW_BRANCH: ${{ needs.guard.outputs.preview_branch }}
         run: |
           set -euo pipefail
           STACK_NAME="${RESOURCE_PREFIX}-pr-${PR_NUMBER}"
@@ -114,7 +115,7 @@ jobs:
             echo "PR number cannot be mapped to valid ALB listener rule priorities" >&2
             exit 1
           fi
-          FRONTEND_ORIGIN="https://pr-${PR_NUMBER}.${CLOUDFLARE_PROJECT_NAME}.pages.dev"
+          FRONTEND_ORIGIN="https://${PREVIEW_BRANCH}.${CLOUDFLARE_PROJECT_NAME}.pages.dev"
           DATABASE_NAME="${DB_NAME:-postgres}"
 
           aws cloudformation deploy \
@@ -234,10 +235,11 @@ jobs:
         id: urls
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          PREVIEW_BRANCH: ${{ needs.guard.outputs.preview_branch }}
         run: |
           set -euo pipefail
           API_BASE_URL="${API_ORIGIN%/}/pr-${PR_NUMBER}/api"
-          PREVIEW_URL="https://pr-${PR_NUMBER}.${CLOUDFLARE_PROJECT_NAME}.pages.dev"
+          PREVIEW_URL="https://${PREVIEW_BRANCH}.${CLOUDFLARE_PROJECT_NAME}.pages.dev"
           echo "api-base-url=${API_BASE_URL}" >> "${GITHUB_OUTPUT}"
           echo "preview-url=${PREVIEW_URL}" >> "${GITHUB_OUTPUT}"
 
@@ -256,7 +258,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: app/frontend
-          command: pages deploy dist --project-name=${{ env.CLOUDFLARE_PROJECT_NAME }} --branch=pr-${{ github.event.pull_request.number }}
+          command: pages deploy dist --project-name=${{ env.CLOUDFLARE_PROJECT_NAME }} --branch=${{ needs.guard.outputs.preview_branch }}
 
       - name: Publish frontend summary
         run: |
@@ -323,10 +325,10 @@ jobs:
       AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
       SHARED_CONFIG_PARAMETER: ${{ vars.SHARED_CONFIG_PARAMETER }}
     steps:
-      - name: Check out cleanup script
+      - name: Check out PR cleanup definition
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -346,11 +348,11 @@ jobs:
 
       - name: Record Pages cleanup limitation
         env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PREVIEW_BRANCH: ${{ needs.guard.outputs.preview_branch }}
         run: |
           {
             echo "### Cloudflare Pages cleanup"
             echo
-            echo "The latest deployment for branch \`pr-${PR_NUMBER}\` cannot be deleted by Pages."
+            echo "The latest deployment for branch \`${PREVIEW_BRANCH}\` cannot be deleted by Pages."
             echo "Older deployments can be removed by the configured retention process."
           } >> "${GITHUB_STEP_SUMMARY}"

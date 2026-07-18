@@ -31,5 +31,5 @@ npm run build
 npx wrangler pages deploy dist --project-name <PROJECT_NAME>
 ```
 
-- PR 环境由 GitHub Actions 使用 `--branch=pr-<PR_NUMBER>` 发布 Direct Upload Preview。
-- Cloudflare API Token 保存在 AWS Secrets Manager，Actions 运行时读取，不提交到仓库。
+- PR 环境由 GitHub Actions 使用规范化后的 `jira-*` PR 源分支发布 Direct Upload Preview，例如 `jira-123` 对应 `jira-123.<PROJECT_NAME>.pages.dev`。
+- Cloudflare API Token 保存在 GitHub Environment Secret `CLOUDFLARE_API_TOKEN` 中，不提交到仓库。
