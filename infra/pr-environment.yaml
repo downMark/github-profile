@@ -74,8 +74,100 @@ Parameters:
   DatabaseName:
     Type: String
     Default: postgres
+  TrafficRollbackRoleArn:
+    Type: String
+    Default: ''
+    AllowedPattern: '(^$|arn:aws:iam::[0-9]{12}:role/.+)'
+
+Conditions:
+  IsProduction: !Equals [!Ref EnvironmentId, prod]
 
 Resources:
+  TodoEventsDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-${EnvironmentId}-todo-events-dlq'
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: EnvironmentInstance
+          Value: !Ref EnvironmentId
+
+  TodoEventsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-${EnvironmentId}-todo-events'
+      MessageRetentionPeriod: 345600
+      ReceiveMessageWaitTimeSeconds: 20
+      VisibilityTimeout: 60
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt TodoEventsDeadLetterQueue.Arn
+        maxReceiveCount: 5
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: EnvironmentInstance
+          Value: !Ref EnvironmentId
+
+  TodoEventsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-${EnvironmentId}-todo-events'
+      KmsMasterKeyId: alias/aws/sns
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: EnvironmentInstance
+          Value: !Ref EnvironmentId
+
+  TodoEventsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref TodoEventsQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowTodoEventsTopic
+            Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt TodoEventsQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref TodoEventsTopic
+
+  TodoEventsSubscription:
+    Type: AWS::SNS::Subscription
+    DependsOn: TodoEventsQueuePolicy
+    Properties:
+      TopicArn: !Ref TodoEventsTopic
+      Protocol: sqs
+      Endpoint: !GetAtt TodoEventsQueue.Arn
+      RawMessageDelivery: true
+
+  TodoEventsDeadLetterAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${EnvironmentId}-todo-events-dlq-not-empty'
+      AlarmDescription: Todo event messages require manual inspection or redrive.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt TodoEventsDeadLetterQueue.QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
   JwtSigningKey:
     Type: AWS::KMS::Key
     Properties:
@@ -158,6 +250,33 @@ Resources:
         - Key: EnvironmentInstance
           Value: !Ref EnvironmentId
 
+  ProfileGreenTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Condition: IsProduction
+    Properties:
+      Name: !Sub 'ghprof-p-${EnvironmentId}-g-tg'
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 3000
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: !Sub '${ApiBasePath}/health'
+      HealthCheckIntervalSeconds: 10
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      Matcher:
+        HttpCode: '200'
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '5'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Slot
+          Value: green
+
   TodoTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
@@ -185,6 +304,33 @@ Resources:
           Value: !Ref EnvironmentName
         - Key: EnvironmentInstance
           Value: !Ref EnvironmentId
+
+  TodoGreenTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Condition: IsProduction
+    Properties:
+      Name: !Sub 'ghprof-t-${EnvironmentId}-g-tg'
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 3000
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: !Sub '${ApiBasePath}/health/todo'
+      HealthCheckIntervalSeconds: 10
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      Matcher:
+        HttpCode: '200'
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '5'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Slot
+          Value: green
 
   AuthTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
@@ -214,6 +360,33 @@ Resources:
         - Key: EnvironmentInstance
           Value: !Ref EnvironmentId
 
+  AuthGreenTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Condition: IsProduction
+    Properties:
+      Name: !Sub 'ghprof-a-${EnvironmentId}-g-tg'
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 3000
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: !Sub '${ApiBasePath}/health/auth'
+      HealthCheckIntervalSeconds: 10
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      Matcher:
+        HttpCode: '200'
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '5'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Slot
+          Value: green
+
   AuthListenerRule:
     Type: AWS::ElasticLoadBalancingV2::ListenerRule
     Properties:
@@ -226,9 +399,20 @@ Resources:
               - !Sub '${ApiBasePath}/health/auth'
               - !Sub '${ApiBasePath}/api/auth/*'
               - !Sub '${ApiBasePath}/.well-known/*'
-      Actions:
-        - Type: forward
-          TargetGroupArn: !Ref AuthTargetGroup
+      Actions: !If
+        - IsProduction
+        - - Type: forward
+            ForwardConfig:
+              TargetGroups:
+                - TargetGroupArn: !Ref AuthTargetGroup
+                  Weight: 100
+                - TargetGroupArn: !Ref AuthGreenTargetGroup
+                  Weight: 0
+              TargetGroupStickinessConfig:
+                Enabled: true
+                DurationSeconds: 300
+        - - Type: forward
+            TargetGroupArn: !Ref AuthTargetGroup
 
   TodoListenerRule:
     Type: AWS::ElasticLoadBalancingV2::ListenerRule
@@ -242,9 +426,20 @@ Resources:
               - !Sub '${ApiBasePath}/health/todo'
               - !Sub '${ApiBasePath}/api/users/*/todos'
               - !Sub '${ApiBasePath}/api/users/*/todos/*'
-      Actions:
-        - Type: forward
-          TargetGroupArn: !Ref TodoTargetGroup
+      Actions: !If
+        - IsProduction
+        - - Type: forward
+            ForwardConfig:
+              TargetGroups:
+                - TargetGroupArn: !Ref TodoTargetGroup
+                  Weight: 100
+                - TargetGroupArn: !Ref TodoGreenTargetGroup
+                  Weight: 0
+              TargetGroupStickinessConfig:
+                Enabled: true
+                DurationSeconds: 300
+        - - Type: forward
+            TargetGroupArn: !Ref TodoTargetGroup
 
   ProfileListenerRule:
     Type: AWS::ElasticLoadBalancingV2::ListenerRule
@@ -258,9 +453,20 @@ Resources:
               - !Sub '${ApiBasePath}/health'
               - !Sub '${ApiBasePath}/api/users'
               - !Sub '${ApiBasePath}/api/users/*'
-      Actions:
-        - Type: forward
-          TargetGroupArn: !Ref ProfileTargetGroup
+      Actions: !If
+        - IsProduction
+        - - Type: forward
+            ForwardConfig:
+              TargetGroups:
+                - TargetGroupArn: !Ref ProfileTargetGroup
+                  Weight: 100
+                - TargetGroupArn: !Ref ProfileGreenTargetGroup
+                  Weight: 0
+              TargetGroupStickinessConfig:
+                Enabled: true
+                DurationSeconds: 300
+        - - Type: forward
+            TargetGroupArn: !Ref ProfileTargetGroup
 
   ProfileTaskDefinition:
     Type: AWS::ECS::TaskDefinition
@@ -392,6 +598,10 @@ Resources:
               Value: !Ref EnvironmentId
             - Name: SERVICE_REVISION
               Value: !Ref ServiceRevision
+            - Name: TODO_EVENTS_TOPIC_ARN
+              Value: !Ref TodoEventsTopic
+            - Name: TODO_EVENTS_QUEUE_URL
+              Value: !Ref TodoEventsQueue
             - Name: PROFILE_GRPC_ADDR
               Value: !Sub 'profile-${EnvironmentId}:50051'
             - Name: AUTH_ISSUER
@@ -637,6 +847,456 @@ Resources:
         - Key: EnvironmentInstance
           Value: !Ref EnvironmentId
 
+  AuthGreenService:
+    Type: AWS::ECS::Service
+    Condition: IsProduction
+    DependsOn: AuthListenerRule
+    Properties:
+      ServiceName: !Sub '${ProjectName}-auth-${EnvironmentId}-green'
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref AuthTaskDefinition
+      DesiredCount: 0
+      LaunchType: FARGATE
+      PlatformVersion: 1.4.0
+      HealthCheckGracePeriodSeconds: 30
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups:
+            - !Ref EcsSecurityGroupId
+      LoadBalancers:
+        - TargetGroupArn: !Ref AuthGreenTargetGroup
+          ContainerName: auth
+          ContainerPort: 3000
+      ServiceConnectConfiguration:
+        Enabled: true
+        Namespace: !Ref CloudMapNamespaceArn
+        Services:
+          - PortName: auth-http
+            DiscoveryName: !Sub 'auth-${EnvironmentId}-green'
+            ClientAliases:
+              - DnsName: !Sub 'auth-${EnvironmentId}-green'
+                Port: 3000
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Slot
+          Value: green
+
+  ProfileGreenService:
+    Type: AWS::ECS::Service
+    Condition: IsProduction
+    DependsOn: ProfileListenerRule
+    Properties:
+      ServiceName: !Sub '${ProjectName}-profile-${EnvironmentId}-green'
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref ProfileTaskDefinition
+      DesiredCount: 0
+      LaunchType: FARGATE
+      PlatformVersion: 1.4.0
+      HealthCheckGracePeriodSeconds: 30
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups:
+            - !Ref EcsSecurityGroupId
+      LoadBalancers:
+        - TargetGroupArn: !Ref ProfileGreenTargetGroup
+          ContainerName: profile
+          ContainerPort: 3000
+      ServiceConnectConfiguration:
+        Enabled: true
+        Namespace: !Ref CloudMapNamespaceArn
+        Services:
+          - PortName: profile-grpc
+            DiscoveryName: !Sub 'profile-${EnvironmentId}-green'
+            ClientAliases:
+              - DnsName: !Sub 'profile-${EnvironmentId}-green'
+                Port: 50051
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Slot
+          Value: green
+
+  TodoGreenService:
+    Type: AWS::ECS::Service
+    Condition: IsProduction
+    DependsOn:
+      - TodoListenerRule
+      - ProfileGreenService
+    Properties:
+      ServiceName: !Sub '${ProjectName}-todo-${EnvironmentId}-green'
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref TodoTaskDefinition
+      DesiredCount: 0
+      LaunchType: FARGATE
+      PlatformVersion: 1.4.0
+      HealthCheckGracePeriodSeconds: 30
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups:
+            - !Ref EcsSecurityGroupId
+      LoadBalancers:
+        - TargetGroupArn: !Ref TodoGreenTargetGroup
+          ContainerName: todo
+          ContainerPort: 3000
+      ServiceConnectConfiguration:
+        Enabled: true
+        Namespace: !Ref CloudMapNamespaceArn
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Slot
+          Value: green
+
+  AuthBlueHealthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: IsProduction
+    Properties:
+      AlarmName: !Sub '${ProjectName}-prod-auth-blue-unhealthy'
+      Metrics:
+        - Id: unhealthy
+          MetricStat:
+            Metric:
+              Namespace: AWS/ApplicationELB
+              MetricName: UnHealthyHostCount
+              Dimensions:
+                - Name: TargetGroup
+                  Value: !GetAtt AuthTargetGroup.TargetGroupFullName
+            Period: 60
+            Stat: Maximum
+          ReturnData: true
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  AuthGreenHealthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: IsProduction
+    Properties:
+      AlarmName: !Sub '${ProjectName}-prod-auth-green-unhealthy'
+      Metrics:
+        - Id: unhealthy
+          MetricStat:
+            Metric:
+              Namespace: AWS/ApplicationELB
+              MetricName: UnHealthyHostCount
+              Dimensions:
+                - Name: TargetGroup
+                  Value: !GetAtt AuthGreenTargetGroup.TargetGroupFullName
+            Period: 60
+            Stat: Maximum
+          ReturnData: true
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  ProfileBlueHealthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: IsProduction
+    Properties:
+      AlarmName: !Sub '${ProjectName}-prod-profile-blue-unhealthy'
+      Namespace: AWS/ApplicationELB
+      MetricName: UnHealthyHostCount
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt ProfileTargetGroup.TargetGroupFullName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  ProfileGreenHealthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: IsProduction
+    Properties:
+      AlarmName: !Sub '${ProjectName}-prod-profile-green-unhealthy'
+      Namespace: AWS/ApplicationELB
+      MetricName: UnHealthyHostCount
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt ProfileGreenTargetGroup.TargetGroupFullName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  TodoBlueHealthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: IsProduction
+    Properties:
+      AlarmName: !Sub '${ProjectName}-prod-todo-blue-unhealthy'
+      Namespace: AWS/ApplicationELB
+      MetricName: UnHealthyHostCount
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt TodoTargetGroup.TargetGroupFullName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  TodoGreenHealthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: IsProduction
+    Properties:
+      AlarmName: !Sub '${ProjectName}-prod-todo-green-unhealthy'
+      Namespace: AWS/ApplicationELB
+      MetricName: UnHealthyHostCount
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt TodoGreenTargetGroup.TargetGroupFullName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  AuthBlue5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: IsProduction
+    Properties:
+      AlarmName: !Sub '${ProjectName}-prod-auth-blue-5xx'
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt AuthTargetGroup.TargetGroupFullName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  AuthGreen5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: IsProduction
+    Properties:
+      AlarmName: !Sub '${ProjectName}-prod-auth-green-5xx'
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt AuthGreenTargetGroup.TargetGroupFullName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  ProfileBlue5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: IsProduction
+    Properties:
+      AlarmName: !Sub '${ProjectName}-prod-profile-blue-5xx'
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt ProfileTargetGroup.TargetGroupFullName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  ProfileGreen5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: IsProduction
+    Properties:
+      AlarmName: !Sub '${ProjectName}-prod-profile-green-5xx'
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt ProfileGreenTargetGroup.TargetGroupFullName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  TodoBlue5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: IsProduction
+    Properties:
+      AlarmName: !Sub '${ProjectName}-prod-todo-blue-5xx'
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt TodoTargetGroup.TargetGroupFullName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  TodoGreen5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: IsProduction
+    Properties:
+      AlarmName: !Sub '${ProjectName}-prod-todo-green-5xx'
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt TodoGreenTargetGroup.TargetGroupFullName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  CandidateTrafficRollbackFunction:
+    Type: AWS::Lambda::Function
+    Condition: IsProduction
+    Properties:
+      FunctionName: !Sub '${ProjectName}-prod-candidate-traffic-rollback'
+      Description: Restore the stable target group when the tagged candidate slot alarms.
+      Runtime: python3.13
+      Handler: index.handler
+      Timeout: 30
+      Role: !Ref TrafficRollbackRoleArn
+      Environment:
+        Variables:
+          PROJECT_NAME: !Ref ProjectName
+          ROUTES: !Sub |
+            {"auth":{"rule":"${AuthListenerRule}","blue":"${AuthTargetGroup}","green":"${AuthGreenTargetGroup}"},"profile":{"rule":"${ProfileListenerRule}","blue":"${ProfileTargetGroup}","green":"${ProfileGreenTargetGroup}"},"todo":{"rule":"${TodoListenerRule}","blue":"${TodoTargetGroup}","green":"${TodoGreenTargetGroup}"}}
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import re
+          import boto3
+
+          elbv2 = boto3.client("elbv2")
+          routes = json.loads(os.environ["ROUTES"])
+
+          def handler(event, context):
+              alarm_name = event["detail"]["alarmName"]
+              pattern = rf"^{re.escape(os.environ['PROJECT_NAME'])}-prod-(auth|profile|todo)-(blue|green)-(?:5xx|unhealthy)$"
+              match = re.match(pattern, alarm_name)
+              if not match:
+                  return {"ignored": "unmanaged alarm"}
+              service, alarmed_slot = match.groups()
+              route = routes[service]
+              tags = elbv2.describe_tags(ResourceArns=[route["rule"]])["TagDescriptions"][0].get("Tags", [])
+              candidate = next((tag["Value"] for tag in tags if tag["Key"] == "CandidateSlot"), None)
+              if candidate != alarmed_slot:
+                  return {"ignored": "alarmed slot is not the candidate"}
+              stable = "green" if candidate == "blue" else "blue"
+              target_health = elbv2.describe_target_health(TargetGroupArn=route[stable])["TargetHealthDescriptions"]
+              if not target_health or not all(item["TargetHealth"]["State"] == "healthy" for item in target_health):
+                  return {"ignored": "previous stable slot is no longer healthy"}
+              elbv2.modify_rule(RuleArn=route["rule"], Actions=[{
+                  "Type": "forward",
+                  "ForwardConfig": {
+                      "TargetGroups": [
+                          {"TargetGroupArn": route[stable], "Weight": 100},
+                          {"TargetGroupArn": route[candidate], "Weight": 0}
+                      ],
+                      "TargetGroupStickinessConfig": {"Enabled": True, "DurationSeconds": 300}
+                  }
+              }])
+              return {"rolled_back": service, "stable": stable, "candidate": candidate}
+
+  CandidateAlarmEventRule:
+    Type: AWS::Events::Rule
+    Condition: IsProduction
+    Properties:
+      Description: Automatically restore stable traffic when a candidate target group alarms.
+      EventPattern:
+        source:
+          - aws.cloudwatch
+        detail-type:
+          - CloudWatch Alarm State Change
+        detail:
+          state:
+            value:
+              - ALARM
+          alarmName:
+            - !Sub '${ProjectName}-prod-auth-blue-unhealthy'
+            - !Sub '${ProjectName}-prod-auth-green-unhealthy'
+            - !Sub '${ProjectName}-prod-profile-blue-unhealthy'
+            - !Sub '${ProjectName}-prod-profile-green-unhealthy'
+            - !Sub '${ProjectName}-prod-todo-blue-unhealthy'
+            - !Sub '${ProjectName}-prod-todo-green-unhealthy'
+            - !Sub '${ProjectName}-prod-auth-blue-5xx'
+            - !Sub '${ProjectName}-prod-auth-green-5xx'
+            - !Sub '${ProjectName}-prod-profile-blue-5xx'
+            - !Sub '${ProjectName}-prod-profile-green-5xx'
+            - !Sub '${ProjectName}-prod-todo-blue-5xx'
+            - !Sub '${ProjectName}-prod-todo-green-5xx'
+      Targets:
+        - Arn: !GetAtt CandidateTrafficRollbackFunction.Arn
+          Id: CandidateTrafficRollback
+
+  AllowEventBridgeRollbackInvocation:
+    Type: AWS::Lambda::Permission
+    Condition: IsProduction
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref CandidateTrafficRollbackFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt CandidateAlarmEventRule.Arn
+
 Outputs:
   ApiBaseUrl:
     Description: API base URL used by the frontend build.
@@ -649,10 +1309,46 @@ Outputs:
     Value: !Sub '${ApiOrigin}${ApiBasePath}/health/auth'
   AuthServiceName:
     Value: !GetAtt AuthService.Name
+  AuthGreenServiceName:
+    Condition: IsProduction
+    Value: !GetAtt AuthGreenService.Name
   ProfileServiceName:
     Value: !GetAtt ProfileService.Name
+  ProfileGreenServiceName:
+    Condition: IsProduction
+    Value: !GetAtt ProfileGreenService.Name
   TodoServiceName:
     Value: !GetAtt TodoService.Name
+  TodoGreenServiceName:
+    Condition: IsProduction
+    Value: !GetAtt TodoGreenService.Name
+  AuthBlueTargetGroupArn:
+    Condition: IsProduction
+    Value: !Ref AuthTargetGroup
+  AuthGreenTargetGroupArn:
+    Condition: IsProduction
+    Value: !Ref AuthGreenTargetGroup
+  ProfileBlueTargetGroupArn:
+    Condition: IsProduction
+    Value: !Ref ProfileTargetGroup
+  ProfileGreenTargetGroupArn:
+    Condition: IsProduction
+    Value: !Ref ProfileGreenTargetGroup
+  TodoBlueTargetGroupArn:
+    Condition: IsProduction
+    Value: !Ref TodoTargetGroup
+  TodoGreenTargetGroupArn:
+    Condition: IsProduction
+    Value: !Ref TodoGreenTargetGroup
+  AuthListenerRuleArn:
+    Condition: IsProduction
+    Value: !Ref AuthListenerRule
+  ProfileListenerRuleArn:
+    Condition: IsProduction
+    Value: !Ref ProfileListenerRule
+  TodoListenerRuleArn:
+    Condition: IsProduction
+    Value: !Ref TodoListenerRule
   ProfileTaskDefinitionArn:
     Value: !Ref ProfileTaskDefinition
   TodoTaskDefinitionArn:
@@ -667,3 +1363,11 @@ Outputs:
     Value: !GetAtt JwtSigningKey.Arn
   DatabaseSchema:
     Value: !Ref DatabaseSchema
+  TodoEventsTopicArn:
+    Value: !Ref TodoEventsTopic
+  TodoEventsQueueArn:
+    Value: !GetAtt TodoEventsQueue.Arn
+  TodoEventsQueueUrl:
+    Value: !Ref TodoEventsQueue
+  TodoEventsDeadLetterQueueArn:
+    Value: !GetAtt TodoEventsDeadLetterQueue.Arn

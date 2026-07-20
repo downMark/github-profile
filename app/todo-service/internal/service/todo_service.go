@@ -19,6 +19,17 @@ type TodoRepository interface {
 	Get(context.Context, uuid.UUID, uuid.UUID) (domain.Todo, error)
 	Update(context.Context, uuid.UUID, uuid.UUID, domain.UpdateInput) (domain.Todo, error)
 	Delete(context.Context, uuid.UUID, uuid.UUID) error
+	ListAudit(context.Context, uuid.UUID, uint32, uint32) (domain.EventAuditListResult, error)
+}
+
+func (s *TodoService) ListAudit(ctx context.Context, userID uuid.UUID, page, limit uint32) (domain.EventAuditListResult, error) {
+	if page == 0 || limit == 0 || limit > 100 {
+		return domain.EventAuditListResult{}, fmt.Errorf("%w: page must be >= 1 and limit must be between 1 and 100", domain.ErrInvalidInput)
+	}
+	if err := s.profiles.AuthorizeGithubUser(ctx, userID); err != nil {
+		return domain.EventAuditListResult{}, err
+	}
+	return s.todos.ListAudit(ctx, userID, page, limit)
 }
 
 type TodoService struct {

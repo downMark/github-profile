@@ -1,0 +1,74 @@
+name: Prepare Production Candidate
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: production-release-control
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      SHARED_CONFIG_PARAMETER: ${{ vars.SHARED_CONFIG_PARAMETER }}
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate bootstrap configuration
+        run: .github/scripts/validate-bootstrap.sh
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Load shared deployment configuration
+        uses: ./.github/actions/load-deployment-config
+        with:
+          parameter-name: ${{ env.SHARED_CONFIG_PARAMETER }}
+
+      - name: Validate production release configuration
+        run: |
+          set -euo pipefail
+          [[ -n "${RELEASE_MANIFEST_BUCKET:-}" ]] || { echo "RELEASE_MANIFEST_BUCKET is required" >&2; exit 1; }
+
+      - name: Build immutable service images
+        id: codebuild
+        env:
+          HEAD_SHA: ${{ github.sha }}
+          ENVIRONMENT_ID: prod
+        run: .github/scripts/run-codebuild-batch.sh
+
+      - name: Prepare zero-traffic candidates
+        id: candidate
+        env:
+          HEAD_SHA: ${{ github.sha }}
+          AUTH_IMAGE_URI: ${{ steps.codebuild.outputs.auth-image-uri }}
+          PROFILE_IMAGE_URI: ${{ steps.codebuild.outputs.profile-image-uri }}
+          TODO_IMAGE_URI: ${{ steps.codebuild.outputs.todo-image-uri }}
+        run: .github/scripts/prepare-production-candidates.sh
+
+      - name: Publish release summary
+        run: |
+          {
+            echo "### Production candidates prepared"
+            echo
+            echo "- Release: `${{ steps.candidate.outputs.release-id }}`"
+            echo "- Services: `${{ steps.candidate.outputs.services }}`"
+            echo "- Traffic: candidate target groups remain at **0%**"
+            echo "- Next: adjust the affected ALB listener-rule weights manually in AWS"
+          } >> "${GITHUB_STEP_SUMMARY}"

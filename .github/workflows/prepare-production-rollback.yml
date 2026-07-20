@@ -1,0 +1,53 @@
+name: Prepare Production Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: Release ID to restore (must still be inside the 24-hour window)
+        required: true
+        type: string
+      services:
+        description: Comma-separated auth,profile,todo or all
+        required: true
+        default: all
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: production-release-control
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      SHARED_CONFIG_PARAMETER: ${{ vars.SHARED_CONFIG_PARAMETER }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: ./.github/actions/load-deployment-config
+        with:
+          parameter-name: ${{ env.SHARED_CONFIG_PARAMETER }}
+      - name: Prepare historical images as zero-traffic candidates
+        env:
+          ROLLBACK_RELEASE_ID: ${{ inputs.release_id }}
+          ROLLBACK_SERVICES: ${{ inputs.services }}
+        run: .github/scripts/prepare-production-rollback.sh
+      - name: Publish instructions
+        run: |
+          {
+            echo "### Rollback candidates prepared"
+            echo
+            echo "Historical images are healthy and remain at **0%** traffic."
+            echo "Adjust the affected ALB listener-rule weights manually to validate or complete the rollback."
+          } >> "${GITHUB_STEP_SUMMARY}"

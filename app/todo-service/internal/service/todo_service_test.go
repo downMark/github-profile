@@ -29,6 +29,9 @@ func (*fakeTodos) Update(context.Context, uuid.UUID, uuid.UUID, domain.UpdateInp
 	return domain.Todo{}, nil
 }
 func (*fakeTodos) Delete(context.Context, uuid.UUID, uuid.UUID) error { return nil }
+func (*fakeTodos) ListAudit(context.Context, uuid.UUID, uint32, uint32) (domain.EventAuditListResult, error) {
+	return domain.EventAuditListResult{}, nil
+}
 
 func TestCreateValidatesProfileBeforeWriting(t *testing.T) {
 	t.Parallel()

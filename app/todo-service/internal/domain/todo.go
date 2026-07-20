@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -31,6 +32,36 @@ type ListResult struct {
 	Total int64  `json:"total"`
 	Page  uint32 `json:"page"`
 	Limit uint32 `json:"limit"`
+}
+
+type TodoEvent struct {
+	EventID       uuid.UUID       `json:"event_id"`
+	SchemaVersion int             `json:"schema_version"`
+	EventType     string          `json:"event_type"`
+	OccurredAt    time.Time       `json:"occurred_at"`
+	Environment   string          `json:"environment"`
+	GithubUserID  uuid.UUID       `json:"github_user_id"`
+	TodoID        uuid.UUID       `json:"todo_id"`
+	Todo          json.RawMessage `json:"todo"`
+}
+
+type TodoEventAudit struct {
+	EventID       uuid.UUID       `json:"event_id"`
+	SchemaVersion int             `json:"schema_version"`
+	EventType     string          `json:"event_type"`
+	OccurredAt    time.Time       `json:"occurred_at"`
+	ProcessedAt   time.Time       `json:"processed_at"`
+	Environment   string          `json:"environment"`
+	GithubUserID  uuid.UUID       `json:"github_user_id"`
+	TodoID        uuid.UUID       `json:"todo_id"`
+	Todo          json.RawMessage `json:"todo"`
+}
+
+type EventAuditListResult struct {
+	Items []TodoEventAudit `json:"items"`
+	Total int64            `json:"total"`
+	Page  uint32           `json:"page"`
+	Limit uint32           `json:"limit"`
 }
 
 type CreateInput struct {

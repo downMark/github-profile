@@ -41,6 +41,16 @@ runs:
           echo "${name}=${value}" >> "${GITHUB_ENV}"
         done
 
+        optional=(RELEASE_MANIFEST_BUCKET TRAFFIC_ROLLBACK_ROLE_ARN SYNTHETICS_CANARY_ROLE_ARN)
+        for name in "${optional[@]}"; do
+          value="$(jq -er --arg name "${name}" '.[$name] // empty | select(type == "string")' <<< "${CONFIG}")" || value=""
+          if [[ "${value}" == *$'\n'* || "${value}" == *$'\r'* ]]; then
+            echo "SSM deployment config value contains a newline: ${name}" >&2
+            exit 1
+          fi
+          echo "${name}=${value}" >> "${GITHUB_ENV}"
+        done
+
         database_name="$(jq -er '(.DB_NAME // "postgres") | select(type == "string" and length > 0)' <<< "${CONFIG}")" || {
           echo "SSM deployment config DB_NAME must be a non-empty string when provided" >&2
           exit 1

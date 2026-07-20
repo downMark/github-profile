@@ -21,6 +21,8 @@ type Config struct {
 	AuthJWKSURL            string
 	DeployEnvironment      string
 	ServiceRevision        string
+	TodoEventsTopicARN     string
+	TodoEventsQueueURL     string
 }
 
 func Load() (Config, error) {
@@ -46,6 +48,11 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	topicARN := os.Getenv("TODO_EVENTS_TOPIC_ARN")
+	queueURL := os.Getenv("TODO_EVENTS_QUEUE_URL")
+	if (topicARN == "") != (queueURL == "") {
+		return Config{}, fmt.Errorf("TODO_EVENTS_TOPIC_ARN and TODO_EVENTS_QUEUE_URL must be configured together")
+	}
 	return Config{
 		Port:                   port,
 		DatabaseURL:            databaseURL,
@@ -59,6 +66,8 @@ func Load() (Config, error) {
 		AuthJWKSURL:            envOr("AUTH_JWKS_URL", "http://localhost:3002/.well-known/jwks.json"),
 		DeployEnvironment:      envOr("DEPLOY_ENVIRONMENT", "local"),
 		ServiceRevision:        envOr("SERVICE_REVISION", "development"),
+		TodoEventsTopicARN:     topicARN,
+		TodoEventsQueueURL:     queueURL,
 	}, nil
 }
 

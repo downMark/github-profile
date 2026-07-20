@@ -1,8 +1,6 @@
-name: Deploy Production
+name: Bootstrap Production Infrastructure
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -44,6 +42,7 @@ jobs:
       - name: Set production environment
         run: |
           set -euo pipefail
+          [[ -n "${TRAFFIC_ROLLBACK_ROLE_ARN:-}" ]] || { echo "TRAFFIC_ROLLBACK_ROLE_ARN is required" >&2; exit 1; }
           {
             echo "ENVIRONMENT_ID=prod"
             echo "DATABASE_SCHEMA=prod"
@@ -102,7 +101,8 @@ jobs:
               RdsSecretArn="${RDS_SECRET_ARN}" \
               TokenEncryptionSecretArn="${TOKEN_ENCRYPTION_SECRET_ARN}" \
               DatabaseHost="${DB_HOST}" \
-              DatabaseName="${DB_NAME:-postgres}"
+              DatabaseName="${DB_NAME:-postgres}" \
+              TrafficRollbackRoleArn="${TRAFFIC_ROLLBACK_ROLE_ARN}"
 
       - name: Read stack API URL and verify services
         id: stack
@@ -118,37 +118,12 @@ jobs:
           curl --fail --silent --show-error --retry 10 --retry-delay 6 "${PROFILE_HEALTH_URL}"
           curl --fail --silent --show-error --retry 10 --retry-delay 6 "${TODO_HEALTH_URL}"
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: npm
-          cache-dependency-path: app/frontend/package-lock.json
-
-      - name: Test and build frontend
-        working-directory: app/frontend
-        env:
-          VITE_API_BASE_URL: ${{ steps.stack.outputs.api-base-url }}
-        run: |
-          npm ci
-          npm run lint
-          npm run build
-
-      - name: Deploy Cloudflare Pages
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: app/frontend
-          command: pages deploy dist --project-name=${{ env.CLOUDFLARE_PROJECT_NAME }} --branch=${{ env.CLOUDFLARE_BRANCH }}
-
       - name: Publish deployment summary
         run: |
           {
             echo "### ${ENVIRONMENT_ID} deployment"
             echo
             echo "- Commit: \`${GITHUB_SHA}\`"
-            echo "- Frontend: ${FRONTEND_ORIGIN}"
             echo "- API: ${{ steps.stack.outputs.api-base-url }}"
             echo "- CodeBuild batch: \`${{ steps.codebuild.outputs.batch-id }}\`"
           } >> "${GITHUB_STEP_SUMMARY}"

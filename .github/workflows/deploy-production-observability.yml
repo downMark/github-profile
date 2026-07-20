@@ -1,0 +1,42 @@
+name: Deploy Production Observability
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      SHARED_CONFIG_PARAMETER: ${{ vars.SHARED_CONFIG_PARAMETER }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: ./.github/actions/load-deployment-config
+        with:
+          parameter-name: ${{ env.SHARED_CONFIG_PARAMETER }}
+      - name: Validate manual IAM setup
+        run: |
+          set -euo pipefail
+          [[ -n "${SYNTHETICS_CANARY_ROLE_ARN:-}" ]] || { echo "SYNTHETICS_CANARY_ROLE_ARN is required" >&2; exit 1; }
+      - name: Deploy observability stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name "${RESOURCE_PREFIX}-prod-observability" \
+            --template-file infra/production-observability.yaml \
+            --role-arn "${CLOUDFORMATION_ROLE_ARN}" \
+            --no-fail-on-empty-changeset \
+            --tags Project="${RESOURCE_PREFIX}" Environment=prod \
+            --parameter-overrides \
+              ProjectName="${RESOURCE_PREFIX}" \
+              ApiOrigin="${API_ORIGIN}" \
+              CanaryExecutionRoleArn="${SYNTHETICS_CANARY_ROLE_ARN}"
