@@ -1,0 +1,139 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Production CloudWatch Synthetics health checks for github-profile.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: github-profile
+    AllowedPattern: '[a-z0-9-]+'
+    MaxLength: 14
+  ApiOrigin:
+    Type: String
+    AllowedPattern: 'https://[^/]+'
+  CanaryExecutionRoleArn:
+    Type: String
+    AllowedPattern: 'arn:aws:iam::[0-9]{12}:role/.+'
+
+Resources:
+  CanaryArtifactsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteCanaryArtifactsAfter30Days
+            Status: Enabled
+            ExpirationInDays: 30
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: prod
+
+  ReleaseManifestBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteReleaseManifestsAfterOneDay
+            Status: Enabled
+            ExpirationInDays: 1
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 1
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: prod
+
+  ApiHealthCanary:
+    Type: AWS::Synthetics::Canary
+    Properties:
+      Name: !Sub '${ProjectName}-health'
+      ArtifactS3Location: !Sub 's3://${CanaryArtifactsBucket}/runs/'
+      ExecutionRoleArn: !Ref CanaryExecutionRoleArn
+      RuntimeVersion: syn-nodejs-5.1
+      StartCanaryAfterCreation: true
+      Schedule:
+        Expression: rate(5 minutes)
+        DurationInSeconds: '0'
+      RunConfig:
+        TimeoutInSeconds: 30
+        MemoryInMB: 960
+        EnvironmentVariables:
+          API_ORIGIN: !Ref ApiOrigin
+      SuccessRetentionPeriod: 31
+      FailureRetentionPeriod: 31
+      Code:
+        Handler: index.handler
+        Script: |
+          const synthetics = require('@aws/synthetics-core');
+
+          const validate200 = async (response) => {
+            if (response.statusCode !== 200) {
+              throw new Error(`Expected HTTP 200, received ${response.statusCode}`);
+            }
+          };
+
+          exports.handler = async () => {
+            const origin = process.env.API_ORIGIN.replace(/\/$/, '');
+            await synthetics.executeHttpStep('auth-health', `${origin}/health/auth`, validate200);
+            await synthetics.executeHttpStep('profile-health', `${origin}/health`, validate200);
+            await synthetics.executeHttpStep('todo-health', `${origin}/health/todo`, validate200);
+          };
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: prod
+
+  ApiHealthCanaryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-prod-api-health-canary-failed'
+      AlarmDescription: Two consecutive production API health canary failures.
+      Namespace: CloudWatchSynthetics
+      MetricName: SuccessPercent
+      Dimensions:
+        - Name: CanaryName
+          Value: !Ref ApiHealthCanary
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 100
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+
+Outputs:
+  CanaryName:
+    Value: !Ref ApiHealthCanary
+  CanaryAlarmName:
+    Value: !Ref ApiHealthCanaryAlarm
+  CanaryArtifactsBucketName:
+    Value: !Ref CanaryArtifactsBucket
+  ReleaseManifestBucketName:
+    Value: !Ref ReleaseManifestBucket

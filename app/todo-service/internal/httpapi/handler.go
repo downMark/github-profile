@@ -24,6 +24,7 @@ type TodoService interface {
 	Get(context.Context, uuid.UUID, uuid.UUID) (domain.Todo, error)
 	Update(context.Context, uuid.UUID, uuid.UUID, domain.UpdateInput) (domain.Todo, error)
 	Delete(context.Context, uuid.UUID, uuid.UUID) error
+	ListAudit(context.Context, uuid.UUID, uint32, uint32) (domain.EventAuditListResult, error)
 }
 
 type Authenticator interface {
@@ -78,8 +79,44 @@ func NewWithDeployment(service TodoService, auth Authenticator, logger *slog.Log
 	mux.HandleFunc(basePath+"/health/todo", handler.health)
 	mux.HandleFunc(basePath+"/api/users/mock/todos/mock", handler.mock)
 	mux.HandleFunc(basePath+"/api/users/{user_id}/todos", handler.collection)
+	mux.HandleFunc(basePath+"/api/users/{user_id}/todos/events", handler.events)
 	mux.HandleFunc(basePath+"/api/users/{user_id}/todos/{todo_id}", handler.item)
 	return handler.cors(handler.recoverPanic(mux))
+}
+
+func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		h.methodNotAllowed(w)
+		return
+	}
+	r, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	userID, ok := h.pathUUID(w, r, "user_id", "user id")
+	if !ok {
+		return
+	}
+	page, err := queryUint32(r, "page", 1)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	limit, err := queryUint32(r, "limit", 20)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	result, err := h.service.ListAudit(r.Context(), userID, page, limit)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) mock(w http.ResponseWriter, r *http.Request) {

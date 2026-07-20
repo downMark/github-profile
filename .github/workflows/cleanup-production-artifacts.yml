@@ -1,0 +1,34 @@
+name: Cleanup Production Rollback Artifacts
+
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: cleanup-production-artifacts
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      SHARED_CONFIG_PARAMETER: ${{ vars.SHARED_CONFIG_PARAMETER }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: ./.github/actions/load-deployment-config
+        with:
+          parameter-name: ${{ env.SHARED_CONFIG_PARAMETER }}
+      - name: Delete unreferenced images older than 24 hours
+        run: .github/scripts/cleanup-production-artifacts.sh

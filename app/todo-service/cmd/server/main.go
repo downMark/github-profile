@@ -11,9 +11,13 @@ import (
 	"syscall"
 	"time"
 
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/sns"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/downMark/github-profile/app/todo-service/internal/auth"
 	"github.com/downMark/github-profile/app/todo-service/internal/config"
 	"github.com/downMark/github-profile/app/todo-service/internal/httpapi"
+	"github.com/downMark/github-profile/app/todo-service/internal/messaging"
 	"github.com/downMark/github-profile/app/todo-service/internal/postgres"
 	"github.com/downMark/github-profile/app/todo-service/internal/profileclient"
 	"github.com/downMark/github-profile/app/todo-service/internal/service"
@@ -50,7 +54,17 @@ func run(logger *slog.Logger) error {
 	}
 	defer profiles.Close()
 
-	todos := service.New(profiles, postgres.NewRepository(pool))
+	repository := postgres.NewRepositoryWithEnvironment(pool, config.DeployEnvironment)
+	todos := service.New(profiles, repository)
+	if config.TodoEventsTopicARN != "" {
+		awsConfiguration, err := awsconfig.LoadDefaultConfig(ctx)
+		if err != nil {
+			return fmt.Errorf("load AWS messaging configuration: %w", err)
+		}
+		go messaging.NewPublisher(repository, sns.NewFromConfig(awsConfiguration), config.TodoEventsTopicARN, logger).Run(ctx)
+		go messaging.NewConsumer(repository, sqs.NewFromConfig(awsConfiguration), config.TodoEventsQueueURL, logger).Run(ctx)
+		logger.Info("todo event messaging enabled")
+	}
 	verifier := auth.New(config.AuthIssuer, config.AuthAudience, config.AuthJWKSURL)
 	handler := httpapi.NewWithDeployment(
 		todos, verifier, logger, config.AllowedOrigin, config.APIBasePath,

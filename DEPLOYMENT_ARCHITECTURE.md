@@ -17,6 +17,18 @@ GitHub Pull Request
 
 共享 VPC、ALB、ECS Cluster、RDS 和 Cloud Map Namespace。每个 PR 只创建应用层资源，并使用独立 PostgreSQL Schema。
 
+生产发布与 PR 发布不同：生产长期保留每个服务的 Blue/Green 两个 ECS 槽位和两个 Target Group。主分支 CI 只更新当前 0%槽位并等待健康，不自动修改 ALB 权重；管理员在 AWS 控制台控制灰度比例，完成后把旧槽位 Desired Count 调整为 0。具体 IAM、SSM、灰度和回滚步骤见 [AWS_MANUAL_SETUP.md](AWS_MANUAL_SETUP.md)。
+
+生产相关工作流：
+
+```text
+Prepare Production Candidate       构建并准备 0% Candidate
+Prepare Production Rollback        24 小时内准备历史版本 Candidate
+Cleanup Production Rollback Artifacts  清理未被槽位引用的过期镜像
+Deploy Production Frontend         后端灰度完成后手动发布前端
+Deploy Production Observability    手动部署 Synthetics 与 Release Manifest Bucket
+```
+
 ## 2. 资源边界
 
 ### 共享资源

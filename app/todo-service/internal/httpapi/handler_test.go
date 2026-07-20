@@ -35,6 +35,9 @@ func (f *fakeService) Update(_ context.Context, _, _ uuid.UUID, input domain.Upd
 	return domain.Todo{}, nil
 }
 func (*fakeService) Delete(context.Context, uuid.UUID, uuid.UUID) error { return nil }
+func (*fakeService) ListAudit(context.Context, uuid.UUID, uint32, uint32) (domain.EventAuditListResult, error) {
+	return domain.EventAuditListResult{Items: []domain.TodoEventAudit{}, Page: 1, Limit: 20}, nil
+}
 
 func TestPatchNullClearsDescription(t *testing.T) {
 	t.Parallel()
@@ -58,6 +61,26 @@ func TestListResponseHasFixedShape(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/api/users/"+uuid.NewString()+"/todos", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
+	var body map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"items", "total", "page", "limit"} {
+		if _, ok := body[key]; !ok {
+			t.Fatalf("missing response field %q", key)
+		}
+	}
+}
+
+func TestEventAuditResponseHasFixedShape(t *testing.T) {
+	t.Parallel()
+	handler := New(&fakeService{}, fakeAuth{}, slog.New(slog.NewTextHandler(io.Discard, nil)), "http://localhost", "")
+	request := httptest.NewRequest(http.MethodGet, "/api/users/"+uuid.NewString()+"/todos/events", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
 	var body map[string]any
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)

@@ -96,4 +96,24 @@ func TestRepositoryIntegration(t *testing.T) {
 	if _, err := repository.Get(ctx, userA, created.ID); !errors.Is(err, domain.ErrTodoNotFound) {
 		t.Fatalf("deleted todo must return not found, got %v", err)
 	}
+	events, err := repository.ClaimOutbox(ctx, "integration-test", 20)
+	if err != nil {
+		t.Fatalf("claim outbox: %v", err)
+	}
+	if len(events) != 5 {
+		t.Fatalf("outbox event count = %d, want 5", len(events))
+	}
+	if err := repository.RecordAudit(ctx, events[0]); err != nil {
+		t.Fatalf("record audit: %v", err)
+	}
+	if err := repository.RecordAudit(ctx, events[0]); err != nil {
+		t.Fatalf("record duplicate audit: %v", err)
+	}
+	audit, err := repository.ListAudit(ctx, events[0].GithubUserID, 1, 20)
+	if err != nil {
+		t.Fatalf("list audit: %v", err)
+	}
+	if audit.Total != 1 || len(audit.Items) != 1 {
+		t.Fatalf("audit idempotency failed: %#v", audit)
+	}
 }

@@ -16,3 +16,12 @@ func TestValidPRSchema(t *testing.T) {
 		}
 	}
 }
+
+func TestMessagingConfigurationRequiresTopicAndQueue(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://test:test@localhost/test")
+	t.Setenv("TODO_EVENTS_TOPIC_ARN", "arn:aws:sns:us-east-1:123456789012:todo")
+	t.Setenv("TODO_EVENTS_QUEUE_URL", "")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load accepted a topic without a queue")
+	}
+}
